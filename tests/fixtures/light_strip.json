@@ -1,0 +1,19 @@
+{
+  "system": {
+    "get_sysinfo": {
+      "alias": "LED Strip",
+      "model": "KL430",
+      "mac": "55:66:77:88:99:AA",
+      "type": "IOT.SMARTBULB",
+      "mic_type": "IOT.SMARTBULB",
+      "relay_state": 1,
+      "light_state": {
+        "on_off": 1,
+        "brightness": 40,
+        "color_temp": 3500,
+        "hue": 200,
+        "saturation": 90
+      }
+    }
+  }
+}

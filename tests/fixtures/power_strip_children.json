@@ -1,0 +1,16 @@
+{
+  "system": {
+    "get_sysinfo": {
+      "alias": "Office Strip",
+      "model": "HS300(US)",
+      "mac": "11:22:33:44:55:66",
+      "type": "IOT.SMARTPLUGSWITCH",
+      "mic_type": "IOT.SMARTPLUGSWITCH",
+      "relay_state": 1,
+      "children": [
+        {"id": "00", "alias": "Desk", "state": 1},
+        {"id": "01", "alias": "Lamp", "state": 0}
+      ]
+    }
+  }
+}

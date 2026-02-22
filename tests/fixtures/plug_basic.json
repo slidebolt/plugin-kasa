@@ -1,0 +1,12 @@
+{
+  "system": {
+    "get_sysinfo": {
+      "alias": "Living Room Plug",
+      "model": "HS103(US)",
+      "mac": "AA:BB:CC:DD:EE:FF",
+      "type": "IOT.SMARTPLUGSWITCH",
+      "mic_type": "IOT.SMARTPLUGSWITCH",
+      "relay_state": 1
+    }
+  }
+}
