@@ -212,22 +212,21 @@ func (a *kasaAdapter) refreshStateFromSysInfo(info logic.KasaSysInfo) {
 	} else {
 		state["power"] = info.RelayState == 1
 	}
-	state["ip"] = a.ip
+	
+	// Technical hardware data goes to Raw
+	_ = a.device.UpdateRaw(map[string]interface{}{"ip": a.ip})
+	
+	// Functional state goes to Properties
 	a.publishState(state)
 }
 
 func (a *kasaAdapter) publishState(state map[string]interface{}) {
-	power, _ := state["power"].(bool)
-
-	if !hasCustomScript(a.entity) {
-		if power {
-			_ = a.entity.UpdateState("active")
-		} else {
-			_ = a.entity.UpdateState("active") // Device is still active framework-wise
-		}
+	if len(state) == 0 {
+		return
 	}
-	// power field is already in state
-	_ = a.entity.Publish(fmt.Sprintf("entity.%s.state", a.entity.ID()), state)
+
+	// This method handles both persistence and bus publishing in the clean contract.
+	_ = a.entity.UpdateProperties(state)
 }
 
 func DiscoverStatic(_ sdk.Bundle, _ logic.KasaClient) {
