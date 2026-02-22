@@ -1,14 +1,50 @@
 package main
 
 import (
+	"context"
 	"fmt"
-	"github.com/slidebolt/plugin-framework"
-	 "github.com/slidebolt/plugin-kasa/pkg/bundle"
-	"github.com/slidebolt/plugin-sdk"
+	"os"
+	"os/signal"
+	"syscall"
+
+	framework "github.com/slidebolt/plugin-framework"
+	"github.com/slidebolt/plugin-kasa/pkg/bundle"
+	sdk "github.com/slidebolt/plugin-sdk"
 )
+
+const lockPath = "/tmp/plugin-kasa.lock"
+
+func acquireLock() (*os.File, error) {
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return nil, fmt.Errorf("open lock file: %w", err)
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("another instance is already running")
+	}
+	return f, nil
+}
+
+func releaseLock(f *os.File) {
+	_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	f.Close()
+	os.Remove(lockPath)
+}
 
 func main() {
 	fmt.Println("Starting Kasa Plugin Sidecar...")
+
+	lock, err := acquireLock()
+	if err != nil {
+		fmt.Printf("Failed to acquire instance lock: %v\n", err)
+		return
+	}
+	defer releaseLock(lock)
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	framework.Init()
 
 	b, err := sdk.RegisterBundle("plugin-kasa")
@@ -24,5 +60,7 @@ func main() {
 	}
 
 	fmt.Println("Kasa Plugin is running.")
-	select {}
+	<-ctx.Done()
+	fmt.Println("Kasa Plugin shutting down.")
+	p.Shutdown()
 }
