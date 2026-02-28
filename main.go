@@ -47,6 +47,12 @@ func (p *PluginKasaPlugin) OnReady() {
 	go p.pollingLoop()
 }
 
+func (p *PluginKasaPlugin) OnShutdown() {
+	if p.cancel != nil {
+		p.cancel()
+	}
+}
+
 func (p *PluginKasaPlugin) discoveryLoop() {
 	// Start UDP listener
 	stop, err := p.client.ListenUDP(func(ip string, info kasa.KasaSysInfo) {
