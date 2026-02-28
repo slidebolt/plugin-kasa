@@ -25,6 +25,7 @@ type PluginKasaPlugin struct {
 	failures  map[string]int          // id -> consecutive failures
 	ctx       context.Context
 	cancel    context.CancelFunc
+	rawStore  runner.RawStore
 }
 
 func (p *PluginKasaPlugin) OnInitialize(config runner.Config, state types.Storage) (types.Manifest, types.Storage) {
@@ -34,6 +35,7 @@ func (p *PluginKasaPlugin) OnInitialize(config runner.Config, state types.Storag
 	p.deviceMap = make(map[string]types.Device)
 	p.failures = make(map[string]int)
 	p.ctx, p.cancel = context.WithCancel(context.Background())
+	p.rawStore = config.RawStore
 
 	if len(state.Data) > 0 {
 		_ = json.Unmarshal(state.Data, &p.ipMap)
@@ -118,7 +120,11 @@ func (p *PluginKasaPlugin) pollDevice(dev types.Device) {
 		var cfg struct {
 			IP string `json:"ip"`
 		}
-		json.Unmarshal(dev.Config.Data, &cfg)
+		if p.rawStore != nil {
+			if raw, err := p.rawStore.ReadRawDevice(dev.ID); err == nil {
+				json.Unmarshal(raw, &cfg)
+			}
+		}
 		ip = cfg.IP
 	}
 	failCount := p.failures[dev.ID]
@@ -218,7 +224,11 @@ func (p *PluginKasaPlugin) OnDeviceCreate(dev types.Device) (types.Device, error
 	var cfg struct {
 		IP string `json:"ip"`
 	}
-	json.Unmarshal(dev.Config.Data, &cfg)
+	if p.rawStore != nil {
+		if raw, err := p.rawStore.ReadRawDevice(dev.ID); err == nil {
+			json.Unmarshal(raw, &cfg)
+		}
+	}
 	if cfg.IP != "" {
 		p.ipMap[mac] = cfg.IP
 	}
@@ -250,7 +260,11 @@ func (p *PluginKasaPlugin) OnDevicesList(current []types.Device) ([]types.Device
 		var cfg struct {
 			IP string `json:"ip"`
 		}
-		json.Unmarshal(dev.Config.Data, &cfg)
+		if p.rawStore != nil {
+			if raw, err := p.rawStore.ReadRawDevice(dev.ID); err == nil {
+				json.Unmarshal(raw, &cfg)
+			}
+		}
 		if cfg.IP != "" && p.ipMap[mac] == "" {
 			p.ipMap[mac] = cfg.IP
 		}
@@ -280,23 +294,27 @@ func (p *PluginKasaPlugin) OnDevicesList(current []types.Device) ([]types.Device
 				for _, child := range info.Children {
 					childID := mac + "-" + child.ID
 					if _, exists := existing[childID]; !exists {
+						if p.rawStore != nil {
+							_ = p.rawStore.WriteRawDevice(childID, cfgData)
+						}
 						dev := types.Device{
 							ID:         childID,
 							SourceID:   childID,
 							SourceName: "Kasa " + info.Model + " Outlet",
 							LocalName:  child.Alias,
-							Config:     types.Storage{Meta: "kasa", Data: cfgData},
 						}
 						newDevices = append(newDevices, dev)
 					}
 				}
 			} else {
+				if p.rawStore != nil {
+					_ = p.rawStore.WriteRawDevice(mac, cfgData)
+				}
 				dev := runner.ReconcileDevice(types.Device{}, types.Device{
 					ID:         mac,
 					SourceID:   mac,
 					SourceName: "Kasa " + info.Model,
 					LocalName:  info.Alias,
-					Config:     types.Storage{Meta: "kasa", Data: cfgData},
 				})
 				newDevices = append(newDevices, dev)
 			}
