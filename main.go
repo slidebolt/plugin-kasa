@@ -291,13 +291,13 @@ func (p *PluginKasaPlugin) OnDevicesList(current []types.Device) ([]types.Device
 					}
 				}
 			} else {
-				dev := types.Device{
+				dev := runner.ReconcileDevice(types.Device{}, types.Device{
 					ID:         mac,
 					SourceID:   mac,
 					SourceName: "Kasa " + info.Model,
 					LocalName:  info.Alias,
 					Config:     types.Storage{Meta: "kasa", Data: cfgData},
-				}
+				})
 				newDevices = append(newDevices, dev)
 			}
 		}
