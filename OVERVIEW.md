@@ -33,3 +33,14 @@ The plugin translates and forwards standard Slidebolt commands to the appropriat
 
 -   **`switch`**: `turn_on`, `turn_off`
 -   **`light`**: `turn_on`, `turn_off`, `set_brightness`, `set_rgb`, `set_temperature`
+
+#### Standalone Discovery Mode
+
+This plugin supports a standalone discovery mode for rapid testing and diagnostics without requiring the full Slidebolt stack (NATS, Gateway, etc.).
+
+To run discovery and output the results to JSON:
+```bash
+./plugin-kasa -discover
+```
+
+**Note**: Ensure any required environment variables (e.g., API keys, URLs) are set before running.
