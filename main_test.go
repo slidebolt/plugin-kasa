@@ -136,16 +136,16 @@ func TestOnCommand(t *testing.T) {
 		DeviceID: "dev1",
 		Domain:   entityswitch.Type,
 	}
-	req := types.CommandRequest[types.GenericPayload]{
-		CommandID: "cmd-1",
-		Device:    types.Device{ID: "dev1"},
-		Entity:    ent,
-		Payload:   types.GenericPayload{"type": "turn_on"},
+	req := types.Command{
+		ID:       "cmd-1",
+		DeviceID: "dev1",
+		EntityID: "ent-1",
+		Payload:  json.RawMessage(`{"type":"turn_on"}`),
 	}
 
-	_, err := p.OnCommandTyped(req, ent)
+	_, err := p.OnCommand(req, ent)
 	if err != nil {
-		t.Fatalf("OnCommandTyped failed: %v", err)
+		t.Fatalf("OnCommand failed: %v", err)
 	}
 
 	if !mockClient.SetPowerCalled {

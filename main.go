@@ -41,7 +41,7 @@ func (p *PluginKasaPlugin) OnInitialize(config runner.Config, state types.Storag
 		_ = json.Unmarshal(state.Data, &p.ipMap)
 	}
 
-	return types.Manifest{ID: "plugin-kasa", Name: "Kasa Plugin", Version: "1.0.0"}, state
+	return types.Manifest{ID: "plugin-kasa", Name: "Kasa Plugin", Version: "1.0.0", Schemas: types.CoreDomains()}, state
 }
 
 func (p *PluginKasaPlugin) OnReady() {
@@ -204,17 +204,11 @@ func (p *PluginKasaPlugin) emitState(deviceID, entityID string, power bool, ligh
 		payload, _ = json.Marshal(entityswitch.State{Power: power})
 	}
 
-	p.sink.EmitTypedEvent(types.InboundEventTyped[types.GenericPayload]{
+	p.sink.EmitEvent(types.InboundEvent{
 		DeviceID: deviceID,
 		EntityID: entityID,
-		Payload:  rawToGeneric(payload),
+		Payload:  json.RawMessage(payload),
 	})
-}
-
-func rawToGeneric(raw []byte) types.GenericPayload {
-	out := types.GenericPayload{}
-	_ = json.Unmarshal(raw, &out)
-	return out
 }
 
 func (p *PluginKasaPlugin) OnHealthCheck() (string, error) { return "perfect", nil }
@@ -340,7 +334,7 @@ func (p *PluginKasaPlugin) OnDevicesList(current []types.Device) ([]types.Device
 		p.mu.Unlock()
 	}
 
-	return current, nil
+	return runner.EnsureCoreDevice("plugin-kasa", current), nil
 }
 
 func (p *PluginKasaPlugin) OnDeviceSearch(q types.SearchQuery, res []types.Device) ([]types.Device, error) {
@@ -352,6 +346,7 @@ func (p *PluginKasaPlugin) OnEntityUpdate(e types.Entity) (types.Entity, error) 
 func (p *PluginKasaPlugin) OnEntityDelete(d, e string) error                    { return nil }
 
 func (p *PluginKasaPlugin) OnEntitiesList(deviceID string, current []types.Entity) ([]types.Entity, error) {
+	current = runner.EnsureCoreEntities("plugin-kasa", deviceID, current)
 	p.mu.RLock()
 	dev, ok := p.deviceMap[deviceID]
 	if !ok {
@@ -427,7 +422,7 @@ func entityExists(current []types.Entity, id string) bool {
 	return false
 }
 
-func (p *PluginKasaPlugin) OnCommandTyped(req types.CommandRequest[types.GenericPayload], entity types.Entity) (types.Entity, error) {
+func (p *PluginKasaPlugin) OnCommand(req types.Command, entity types.Entity) (types.Entity, error) {
 	p.mu.RLock()
 	dev, ok := p.deviceMap[entity.DeviceID]
 	if !ok {
@@ -453,7 +448,7 @@ func (p *PluginKasaPlugin) OnCommandTyped(req types.CommandRequest[types.Generic
 	switch entity.Domain {
 	case light.Type:
 		var lcmd light.Command
-		if err := decodeGenericPayload(req.Payload, &lcmd); err != nil {
+		if err := json.Unmarshal(req.Payload, &lcmd); err != nil {
 			return entity, err
 		}
 		if err := light.ValidateCommand(lcmd); err != nil {
@@ -462,7 +457,7 @@ func (p *PluginKasaPlugin) OnCommandTyped(req types.CommandRequest[types.Generic
 		err = p.handleLightCommand(ip, childID, lcmd)
 	case entityswitch.Type:
 		var scmd entityswitch.Command
-		if err := decodeGenericPayload(req.Payload, &scmd); err != nil {
+		if err := json.Unmarshal(req.Payload, &scmd); err != nil {
 			return entity, err
 		}
 		if err := entityswitch.ValidateCommand(scmd); err != nil {
@@ -514,12 +509,12 @@ func (p *PluginKasaPlugin) handleSwitchCommand(ip, childID string, cmd entityswi
 	return nil
 }
 
-func (p *PluginKasaPlugin) OnEventTyped(evt types.EventTyped[types.GenericPayload], entity types.Entity) (types.Entity, error) {
+func (p *PluginKasaPlugin) OnEvent(evt types.Event, entity types.Entity) (types.Entity, error) {
 	// Sync entity state from event
 	if entity.Domain == light.Type {
 		store := light.Bind(&entity)
 		var levt light.Event
-		if err := decodeGenericPayload(evt.Payload, &levt); err != nil {
+		if err := json.Unmarshal(evt.Payload, &levt); err != nil {
 			return entity, err
 		}
 		if err := light.ValidateEvent(levt); err != nil {
@@ -531,7 +526,7 @@ func (p *PluginKasaPlugin) OnEventTyped(evt types.EventTyped[types.GenericPayloa
 	} else if entity.Domain == entityswitch.Type {
 		store := entityswitch.Bind(&entity)
 		var sevt entityswitch.Event
-		if err := decodeGenericPayload(evt.Payload, &sevt); err != nil {
+		if err := json.Unmarshal(evt.Payload, &sevt); err != nil {
 			return entity, err
 		}
 		if err := entityswitch.ValidateEvent(sevt); err != nil {
@@ -542,14 +537,6 @@ func (p *PluginKasaPlugin) OnEventTyped(evt types.EventTyped[types.GenericPayloa
 		}
 	}
 	return entity, nil
-}
-
-func decodeGenericPayload(payload types.GenericPayload, out any) error {
-	raw, err := json.Marshal(payload)
-	if err != nil {
-		return err
-	}
-	return json.Unmarshal(raw, out)
 }
 
 func normalizeMac(mac string) string {
