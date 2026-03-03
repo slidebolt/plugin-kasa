@@ -643,7 +643,11 @@ func hsvToRgb(h, s, v int) (r, g, b int) {
 }
 
 func main() {
-	if err := runner.NewRunner(&PluginKasaPlugin{}).Run(); err != nil {
+	r, err := runner.NewRunner(&PluginKasaPlugin{})
+	if err != nil {
+		log.Fatal(err)
+	}
+	if err := r.Run(); err != nil {
 		log.Fatal(err)
 	}
 }
