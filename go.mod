@@ -3,7 +3,7 @@ module github.com/slidebolt/plugin-kasa
 go 1.25.7
 
 require (
-	github.com/slidebolt/sdk-runner v1.6.1
+	github.com/slidebolt/sdk-runner v1.6.2
 	github.com/slidebolt/sdk-types v1.5.4
 )
 
