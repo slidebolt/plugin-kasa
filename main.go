@@ -2,9 +2,14 @@ package main
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"net"
+	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -26,6 +31,8 @@ type PluginKasaPlugin struct {
 	ctx       context.Context
 	cancel    context.CancelFunc
 	rawStore  runner.RawStore
+	lastScan  time.Time
+	scanMu    sync.Mutex
 }
 
 func (p *PluginKasaPlugin) OnInitialize(config runner.Config, state types.Storage) (types.Manifest, types.Storage) {
@@ -83,12 +90,201 @@ func (p *PluginKasaPlugin) discoveryLoop() {
 		if err := p.client.SendUDPProbe(); err != nil {
 			log.Printf("[WARN] Kasa failed to send UDP probe: %v", err)
 		}
+		p.activeDiscoveryFallback()
 		select {
 		case <-p.ctx.Done():
 			return
 		case <-ticker.C:
 		}
 	}
+}
+
+func boolEnv(key string, def bool) bool {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv(key)))
+	if v == "" {
+		return def
+	}
+	return v == "1" || v == "true" || v == "yes" || v == "on"
+}
+
+func intEnv(key string, def int) int {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n <= 0 {
+		return def
+	}
+	return n
+}
+
+func parseIPs(list string) []string {
+	var out []string
+	seen := map[string]struct{}{}
+	for _, part := range strings.Split(list, ",") {
+		ip := strings.TrimSpace(part)
+		if ip == "" {
+			continue
+		}
+		if net.ParseIP(ip) == nil {
+			continue
+		}
+		if _, ok := seen[ip]; ok {
+			continue
+		}
+		seen[ip] = struct{}{}
+		out = append(out, ip)
+	}
+	return out
+}
+
+func subnetCandidates() []string {
+	raw := strings.TrimSpace(os.Getenv("KASA_DISCOVERY_SUBNETS"))
+	if raw == "" {
+		return nil
+	}
+	var out []string
+	seen := map[string]struct{}{}
+	addIP := func(ip string) {
+		if _, ok := seen[ip]; ok {
+			return
+		}
+		seen[ip] = struct{}{}
+		out = append(out, ip)
+	}
+	for _, token := range strings.Split(raw, ",") {
+		token = strings.TrimSpace(token)
+		if token == "" {
+			continue
+		}
+		if strings.Count(token, ".") == 3 && !strings.Contains(token, "/") {
+			if net.ParseIP(token) != nil {
+				addIP(token)
+			}
+			continue
+		}
+		if strings.Count(token, ".") == 2 && !strings.Contains(token, "/") {
+			for i := 1; i <= 254; i++ {
+				addIP(fmt.Sprintf("%s.%d", token, i))
+			}
+			continue
+		}
+		_, cidr, err := net.ParseCIDR(token)
+		if err != nil {
+			continue
+		}
+		ip := cidr.IP.To4()
+		if ip == nil {
+			continue
+		}
+		maskOnes, bits := cidr.Mask.Size()
+		if bits != 32 || maskOnes < 16 || maskOnes > 30 {
+			continue
+		}
+		start := binary.BigEndian.Uint32(ip)
+		hostBits := uint32(1) << uint32(32-maskOnes)
+		for i := uint32(1); i+1 < hostBits; i++ {
+			v := start + i
+			b := make([]byte, 4)
+			binary.BigEndian.PutUint32(b, v)
+			addIP(net.IP(b).String())
+		}
+	}
+	return out
+}
+
+func quickGetSysInfo(ip string, timeout time.Duration) (*kasa.KasaSysInfo, error) {
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:9999", ip), timeout)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(timeout))
+	payload := kasa.EncryptWithHeader(`{"system":{"get_sysinfo":null}}`)
+	if _, err := conn.Write(payload); err != nil {
+		return nil, err
+	}
+	header := make([]byte, 4)
+	if _, err := io.ReadFull(conn, header); err != nil {
+		return nil, err
+	}
+	length := binary.BigEndian.Uint32(header)
+	if length == 0 || length > 16384 {
+		return nil, fmt.Errorf("invalid response length %d", length)
+	}
+	dataBuf := make([]byte, length)
+	if _, err := io.ReadFull(conn, dataBuf); err != nil {
+		return nil, err
+	}
+	data := kasa.Decrypt(dataBuf)
+	var resp kasa.KasaResponse
+	if err := json.Unmarshal([]byte(data), &resp); err != nil {
+		return nil, err
+	}
+	if resp.System.SysInfo.Mac == "" {
+		return nil, fmt.Errorf("empty mac")
+	}
+	return &resp.System.SysInfo, nil
+}
+
+func (p *PluginKasaPlugin) activeDiscoveryFallback() {
+	if !boolEnv("KASA_DISCOVERY_ACTIVE", true) {
+		return
+	}
+	intervalSec := intEnv("KASA_DISCOVERY_SCAN_INTERVAL_SEC", 180)
+	timeoutMs := intEnv("KASA_DISCOVERY_TIMEOUT_MS", 400)
+	concurrency := intEnv("KASA_DISCOVERY_CONCURRENCY", 64)
+	now := time.Now()
+
+	p.scanMu.Lock()
+	if !p.lastScan.IsZero() && now.Sub(p.lastScan) < time.Duration(intervalSec)*time.Second {
+		p.scanMu.Unlock()
+		return
+	}
+	p.lastScan = now
+	p.scanMu.Unlock()
+
+	candidates := parseIPs(os.Getenv("KASA_STATIC_IPS"))
+	candidates = append(candidates, subnetCandidates()...)
+	if len(candidates) == 0 {
+		return
+	}
+
+	seen := map[string]struct{}{}
+	uniq := make([]string, 0, len(candidates))
+	for _, ip := range candidates {
+		if _, ok := seen[ip]; ok {
+			continue
+		}
+		seen[ip] = struct{}{}
+		uniq = append(uniq, ip)
+	}
+
+	timeout := time.Duration(timeoutMs) * time.Millisecond
+	sem := make(chan struct{}, concurrency)
+	var wg sync.WaitGroup
+	for _, ip := range uniq {
+		ip := ip
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			info, err := quickGetSysInfo(ip, timeout)
+			if err != nil {
+				return
+			}
+			mac := normalizeMac(info.Mac)
+			if mac == "" {
+				return
+			}
+			p.mu.Lock()
+			p.ipMap[mac] = ip
+			p.mu.Unlock()
+		}()
+	}
+	wg.Wait()
 }
 
 func (p *PluginKasaPlugin) pollingLoop() {
