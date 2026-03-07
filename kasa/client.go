@@ -27,7 +27,8 @@ type RealClient struct {
 }
 
 func (c *RealClient) SendUDPProbe() error {
-	probe := Encrypt(`{"system":{"get_sysinfo":null}}`)
+	builder := NewCommandBuilder()
+	probe := Encrypt(builder.GetSysInfo())
 	dest := &net.UDPAddr{IP: net.IPv4bcast, Port: 9999}
 
 	if c.udpConn != nil {
@@ -76,10 +77,8 @@ func (c *RealClient) ListenUDP(callback func(ip string, info KasaSysInfo)) (func
 }
 
 func (c *RealClient) SetPower(ip, childID string, state int) error {
-	cmd := fmt.Sprintf(`{"system":{"set_relay_state":{"state":%d}}}`, state)
-	if childID != "" {
-		cmd = fmt.Sprintf(`{"context":{"child_ids":["%s"]},"system":{"set_relay_state":{"state":%d}}}`, childID, state)
-	}
+	builder := NewCommandBuilder()
+	cmd := builder.SetRelayState(childID, state)
 
 	conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:9999", ip), 2*time.Second)
 	if err != nil {
@@ -93,8 +92,8 @@ func (c *RealClient) SetPower(ip, childID string, state int) error {
 }
 
 func (c *RealClient) SetLightState(ip string, params map[string]any) error {
-	inner, _ := json.Marshal(params)
-	cmd := fmt.Sprintf(`{"smartlife.iot.smartbulb.lightingservice":{"transition_light_state":%s}}`, inner)
+	builder := NewCommandBuilder()
+	cmd := builder.TransitionLightState(params)
 
 	conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:9999", ip), 2*time.Second)
 	if err != nil {
@@ -108,13 +107,16 @@ func (c *RealClient) SetLightState(ip string, params map[string]any) error {
 }
 
 func (c *RealClient) GetSysInfo(ip string) (*KasaSysInfo, error) {
+	builder := NewCommandBuilder()
+	cmd := builder.GetSysInfo()
+
 	conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:9999", ip), 2*time.Second)
 	if err != nil {
 		return nil, err
 	}
 	defer conn.Close()
 
-	payload := EncryptWithHeader(`{"system":{"get_sysinfo":null}}`)
+	payload := EncryptWithHeader(cmd)
 	_, err = conn.Write(payload)
 	if err != nil {
 		return nil, err

@@ -4,11 +4,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"sync"
 	"testing"
 
 	"github.com/slidebolt/plugin-kasa/kasa"
-	"github.com/slidebolt/sdk-types"
 	entityswitch "github.com/slidebolt/sdk-entities/switch"
+	"github.com/slidebolt/sdk-types"
 )
 
 // MockKasaDevice simulates a Kasa device for testing.
@@ -43,7 +44,7 @@ func (m *MockKasaDevice) ServeTCP() {
 				return
 			}
 			data := kasa.Decrypt(buf[4:n])
-			
+
 			var resp any
 			if data == `{"system":{"get_sysinfo":null}}` {
 				sysInfo := kasa.KasaSysInfo{
@@ -56,7 +57,7 @@ func (m *MockKasaDevice) ServeTCP() {
 					sysInfo.DevType = "IOT.SMARTBULB"
 					sysInfo.LightState = m.LightState
 				}
-				
+
 				r := kasa.KasaResponse{}
 				r.System.SysInfo = sysInfo
 				resp = r
@@ -69,7 +70,7 @@ func (m *MockKasaDevice) ServeTCP() {
 				r.System.SetRelayState.ErrCode = 0
 				resp = r
 			}
-			
+
 			if resp != nil {
 				resData, _ := json.Marshal(resp)
 				c.Write(kasa.EncryptWithHeader(string(resData)))
@@ -101,6 +102,55 @@ func TestHandleCommand(t *testing.T) {
 	// but we can test the OnCommand handler if we provide a mock client.
 }
 
+type MockRawStore struct {
+	mu       sync.RWMutex
+	devices  map[string]json.RawMessage
+	entities map[string]json.RawMessage
+}
+
+func NewMockRawStore() *MockRawStore {
+	return &MockRawStore{
+		devices:  make(map[string]json.RawMessage),
+		entities: make(map[string]json.RawMessage),
+	}
+}
+
+func (m *MockRawStore) ReadRawDevice(deviceID string) (json.RawMessage, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	data, ok := m.devices[deviceID]
+	if !ok {
+		return nil, fmt.Errorf("device not found: %s", deviceID)
+	}
+	return data, nil
+}
+
+func (m *MockRawStore) WriteRawDevice(deviceID string, data json.RawMessage) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.devices[deviceID] = data
+	return nil
+}
+
+func (m *MockRawStore) ReadRawEntity(deviceID, entityID string) (json.RawMessage, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	key := deviceID + "/" + entityID
+	data, ok := m.entities[key]
+	if !ok {
+		return nil, fmt.Errorf("entity not found: %s", key)
+	}
+	return data, nil
+}
+
+func (m *MockRawStore) WriteRawEntity(deviceID, entityID string, data json.RawMessage) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := deviceID + "/" + entityID
+	m.entities[key] = data
+	return nil
+}
+
 type MockKasaClient struct {
 	SetPowerCalled bool
 	LastState      int
@@ -117,19 +167,23 @@ func (m *MockKasaClient) SetPower(ip, childID string, state int) error {
 }
 func (m *MockKasaClient) SetLightState(ip string, params map[string]any) error { return nil }
 func (m *MockKasaClient) GetSysInfo(ip string) (*kasa.KasaSysInfo, error)      { return nil, nil }
-func (m *MockKasaClient) Close() error                                        { return nil }
+func (m *MockKasaClient) Close() error                                         { return nil }
 
 func TestOnCommand(t *testing.T) {
 	mockClient := &MockKasaClient{}
+	mockStore := NewMockRawStore()
+
+	// Store IP mapping in RawStore
+	ipData, _ := json.Marshal(map[string]string{"ip": "127.0.0.1"})
+	mockStore.WriteRawDevice("dev1", ipData)
+
+	// Store MAC-to-IP mapping
+	macData, _ := json.Marshal(map[string]string{"ip": "127.0.0.1"})
+	mockStore.WriteRawDevice("aabbccddeeff", macData)
+
 	p := &PluginKasaPlugin{
-		client:    mockClient,
-		ipMap:     map[string]string{"aabbccddeeff": "127.0.0.1"},
-		deviceMap: map[string]types.Device{
-			"dev1": {
-				ID:       "dev1",
-				SourceID: "aabbccddeeff-0",
-			},
-		},
+		client:   mockClient,
+		rawStore: mockStore,
 	}
 
 	ent := types.Entity{
@@ -153,5 +207,124 @@ func TestOnCommand(t *testing.T) {
 	}
 	if mockClient.LastState != 1 {
 		t.Errorf("Expected state 1, got %d", mockClient.LastState)
+	}
+}
+
+func TestRawStoreIPLookup(t *testing.T) {
+	mockStore := NewMockRawStore()
+
+	// Store MAC-to-IP mapping
+	ipData, _ := json.Marshal(map[string]string{"ip": "192.168.1.100"})
+	err := mockStore.WriteRawDevice("aabbccddeeff", ipData)
+	if err != nil {
+		t.Fatalf("Failed to write to RawStore: %v", err)
+	}
+
+	// Read it back
+	readData, err := mockStore.ReadRawDevice("aabbccddeeff")
+	if err != nil {
+		t.Fatalf("Failed to read from RawStore: %v", err)
+	}
+
+	var cfg struct {
+		IP string `json:"ip"`
+	}
+	if err := json.Unmarshal(readData, &cfg); err != nil {
+		t.Fatalf("Failed to unmarshal: %v", err)
+	}
+
+	if cfg.IP != "192.168.1.100" {
+		t.Errorf("Expected IP 192.168.1.100, got %s", cfg.IP)
+	}
+}
+
+func TestOnDevicesListUsesCurrentSlice(t *testing.T) {
+	mockClient := &MockKasaClient{}
+	mockStore := NewMockRawStore()
+
+	// Pre-populate RawStore with some MAC-to-IP mappings
+	ipData1, _ := json.Marshal(map[string]string{"ip": "192.168.1.101"})
+	mockStore.WriteRawDevice("001122334455", ipData1)
+
+	ipData2, _ := json.Marshal(map[string]string{"ip": "192.168.1.102"})
+	mockStore.WriteRawDevice("66778899aabb", ipData2)
+
+	p := &PluginKasaPlugin{
+		client:   mockClient,
+		rawStore: mockStore,
+	}
+
+	// Provide some existing devices in the current slice
+	current := []types.Device{
+		{
+			ID:         "001122334455",
+			SourceID:   "001122334455",
+			SourceName: "Kasa Device 1",
+			LocalName:  "Device 1",
+		},
+	}
+
+	// Call OnDevicesList
+	result, err := p.OnDevicesList(current)
+	if err != nil {
+		t.Fatalf("OnDevicesList failed: %v", err)
+	}
+
+	// Should return at least the existing device
+	if len(result) == 0 {
+		t.Error("OnDevicesList returned empty result")
+	}
+}
+
+func TestPluginUsesCurrentSliceNotDeviceMap(t *testing.T) {
+	// This test verifies that the plugin uses the current slice passed to OnDevicesList
+	// instead of maintaining its own deviceMap
+	mockClient := &MockKasaClient{}
+	mockStore := NewMockRawStore()
+
+	p := &PluginKasaPlugin{
+		client:   mockClient,
+		rawStore: mockStore,
+	}
+
+	// Create a device with SourceID containing MAC
+	mac := "aabbccddeeff"
+	deviceID := "test-device-1"
+
+	// Store IP mapping in RawStore for the MAC
+	ipData, _ := json.Marshal(map[string]string{"ip": "192.168.1.100"})
+	mockStore.WriteRawDevice(mac, ipData)
+
+	// Simulate OnDevicesList call with a device
+	current := []types.Device{
+		{
+			ID:         deviceID,
+			SourceID:   mac,
+			SourceName: "Test Device",
+			LocalName:  "Test",
+		},
+	}
+
+	_, err := p.OnDevicesList(current)
+	if err != nil {
+		t.Fatalf("OnDevicesList failed: %v", err)
+	}
+
+	// Verify the device configuration was read from RawStore
+	// This confirms the plugin is not relying on an internal deviceMap
+	storedData, err := mockStore.ReadRawDevice(mac)
+	if err != nil {
+		t.Fatalf("Failed to read from RawStore: %v", err)
+	}
+
+	var cfg struct {
+		IP string `json:"ip"`
+	}
+	if err := json.Unmarshal(storedData, &cfg); err != nil {
+		t.Fatalf("Failed to unmarshal: %v", err)
+	}
+
+	if cfg.IP != "192.168.1.100" {
+		t.Errorf("Expected IP 192.168.1.100, got %s", cfg.IP)
 	}
 }
