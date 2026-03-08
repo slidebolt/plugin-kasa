@@ -3,8 +3,8 @@ module github.com/slidebolt/plugin-kasa
 go 1.25.7
 
 require (
-	github.com/slidebolt/sdk-runner v1.20.0
-	github.com/slidebolt/sdk-types v1.20.0
+	github.com/slidebolt/sdk-runner v1.20.1
+	github.com/slidebolt/sdk-types v1.20.1
 )
 
 require github.com/yuin/gopher-lua v1.1.1 // indirect
