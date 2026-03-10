@@ -6,7 +6,7 @@ import (
 	"github.com/slidebolt/sdk-types"
 )
 
-func TestOnDevicesList_RetainsManuallyCreatedCurrentDevice(t *testing.T) {
+func TestOnDeviceDiscover_RetainsManuallyCreatedCurrentDevice(t *testing.T) {
 	p := &PluginKasaPlugin{}
 
 	current := []types.Device{
@@ -18,9 +18,9 @@ func TestOnDevicesList_RetainsManuallyCreatedCurrentDevice(t *testing.T) {
 		},
 	}
 
-	devices, err := p.OnDevicesList(current)
+	devices, err := p.OnDeviceDiscover(current)
 	if err != nil {
-		t.Fatalf("OnDevicesList failed: %v", err)
+		t.Fatalf("OnDeviceDiscover failed: %v", err)
 	}
 
 	found := false

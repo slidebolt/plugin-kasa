@@ -50,7 +50,7 @@ func (p *PluginKasaPlugin) OnInitialize(config runner.Config, state types.Storag
 
 func (p *PluginKasaPlugin) OnReady() {
 	// Background discovery is disabled per SDK principles
-	// Discovery happens lazily in OnDevicesList
+	// Discovery happens lazily in OnDeviceDiscover
 	// We only set up the UDP listener to receive broadcast responses
 	stop, err := p.client.ListenUDP(func(ip string, info kasa.KasaSysInfo) {
 		mac := normalizeMac(info.Mac)
@@ -82,7 +82,7 @@ func (p *PluginKasaPlugin) OnShutdown() {
 
 func (p *PluginKasaPlugin) OnHealthCheck() (string, error) { return "perfect", nil }
 
-func (p *PluginKasaPlugin) OnStorageUpdate(current types.Storage) (types.Storage, error) {
+func (p *PluginKasaPlugin) OnConfigUpdate(current types.Storage) (types.Storage, error) {
 	// IP mappings are now stored in RawStore, not in Storage
 	return current, nil
 }
@@ -118,7 +118,7 @@ func (p *PluginKasaPlugin) OnDeviceDelete(id string) error {
 	return nil
 }
 
-func (p *PluginKasaPlugin) OnDevicesList(current []types.Device) ([]types.Device, error) {
+func (p *PluginKasaPlugin) OnDeviceDiscover(current []types.Device) ([]types.Device, error) {
 	// Build existing device lookup map from current slice
 	existing := make(map[string]types.Device)
 	for _, dev := range current {
@@ -256,7 +256,7 @@ func (p *PluginKasaPlugin) OnEntityCreate(e types.Entity) (types.Entity, error) 
 func (p *PluginKasaPlugin) OnEntityUpdate(e types.Entity) (types.Entity, error) { return e, nil }
 func (p *PluginKasaPlugin) OnEntityDelete(d, e string) error                    { return nil }
 
-func (p *PluginKasaPlugin) OnEntitiesList(deviceID string, current []types.Entity) ([]types.Entity, error) {
+func (p *PluginKasaPlugin) OnEntityDiscover(deviceID string, current []types.Entity) ([]types.Entity, error) {
 	current = runner.EnsureCoreEntities("plugin-kasa", deviceID, current)
 
 	// Get MAC from deviceID (they're the same for Kasa devices)

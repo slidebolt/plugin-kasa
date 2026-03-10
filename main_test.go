@@ -238,7 +238,7 @@ func TestRawStoreIPLookup(t *testing.T) {
 	}
 }
 
-func TestOnDevicesListUsesCurrentSlice(t *testing.T) {
+func TestOnDeviceDiscoverUsesCurrentSlice(t *testing.T) {
 	mockClient := &MockKasaClient{}
 	mockStore := NewMockRawStore()
 
@@ -264,20 +264,20 @@ func TestOnDevicesListUsesCurrentSlice(t *testing.T) {
 		},
 	}
 
-	// Call OnDevicesList
-	result, err := p.OnDevicesList(current)
+	// Call OnDeviceDiscover
+	result, err := p.OnDeviceDiscover(current)
 	if err != nil {
-		t.Fatalf("OnDevicesList failed: %v", err)
+		t.Fatalf("OnDeviceDiscover failed: %v", err)
 	}
 
 	// Should return at least the existing device
 	if len(result) == 0 {
-		t.Error("OnDevicesList returned empty result")
+		t.Error("OnDeviceDiscover returned empty result")
 	}
 }
 
 func TestPluginUsesCurrentSliceNotDeviceMap(t *testing.T) {
-	// This test verifies that the plugin uses the current slice passed to OnDevicesList
+	// This test verifies that the plugin uses the current slice passed to OnDeviceDiscover
 	// instead of maintaining its own deviceMap
 	mockClient := &MockKasaClient{}
 	mockStore := NewMockRawStore()
@@ -295,7 +295,7 @@ func TestPluginUsesCurrentSliceNotDeviceMap(t *testing.T) {
 	ipData, _ := json.Marshal(map[string]string{"ip": "192.168.1.100"})
 	mockStore.WriteRawDevice(mac, ipData)
 
-	// Simulate OnDevicesList call with a device
+	// Simulate OnDeviceDiscover call with a device
 	current := []types.Device{
 		{
 			ID:         deviceID,
@@ -305,9 +305,9 @@ func TestPluginUsesCurrentSliceNotDeviceMap(t *testing.T) {
 		},
 	}
 
-	_, err := p.OnDevicesList(current)
+	_, err := p.OnDeviceDiscover(current)
 	if err != nil {
-		t.Fatalf("OnDevicesList failed: %v", err)
+		t.Fatalf("OnDeviceDiscover failed: %v", err)
 	}
 
 	// Verify the device configuration was read from RawStore
