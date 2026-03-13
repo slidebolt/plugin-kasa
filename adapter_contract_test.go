@@ -6,32 +6,25 @@ import (
 	"github.com/slidebolt/sdk-types"
 )
 
-func TestOnDeviceDiscover_RetainsManuallyCreatedCurrentDevice(t *testing.T) {
-	p := &PluginKasaPlugin{}
+func TestDiscoverDevices_IncludesCoreDevice(t *testing.T) {
+	p := NewPluginKasaPlugin()
+	p.macToIP = make(map[string]string)
 
-	current := []types.Device{
-		{
-			ID:         "manual-device-1",
-			SourceID:   "manual-device-1",
-			SourceName: "Manual Device",
-			LocalName:  "Manual Device",
-		},
-	}
-
-	devices, err := p.OnDeviceDiscover(current)
+	devices, err := p.discoverDevices()
 	if err != nil {
-		t.Fatalf("OnDeviceDiscover failed: %v", err)
+		t.Fatalf("discoverDevices failed: %v", err)
 	}
 
+	coreID := types.CoreDeviceID("plugin-kasa")
 	found := false
 	for _, d := range devices {
-		if d.ID == "manual-device-1" {
+		if d.ID == coreID {
 			found = true
 			break
 		}
 	}
 
 	if !found {
-		t.Fatalf("expected manually created device to remain in current slice result")
+		t.Fatalf("expected core device %q in discoverDevices result", coreID)
 	}
 }

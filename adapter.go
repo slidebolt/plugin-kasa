@@ -22,15 +22,13 @@ import (
 
 // PluginKasaPlugin implements the Slidebolt SDK Plugin interface for Kasa devices
 type PluginKasaPlugin struct {
-	sink     runner.EventSink
-	client   kasa.Client
-	mu       sync.RWMutex
-	failures map[string]int // id -> consecutive failures
-	ctx      context.Context
-	cancel   context.CancelFunc
-	rawStore runner.RawStore
-	lastScan time.Time
-	scanMu   sync.Mutex
+	pluginCtx runner.PluginContext
+	client    kasa.Client
+	macMu     sync.RWMutex
+	macToIP   map[string]string // normalized MAC → IP
+	runCtx    context.Context
+	cancel    context.CancelFunc
+	wg        sync.WaitGroup
 }
 
 // NewPluginKasaPlugin creates a new PluginKasaPlugin instance
@@ -38,250 +36,236 @@ func NewPluginKasaPlugin() *PluginKasaPlugin {
 	return &PluginKasaPlugin{}
 }
 
-func (p *PluginKasaPlugin) OnInitialize(config runner.Config, state types.Storage) (types.Manifest, types.Storage) {
-	p.sink = config.EventSink
+func (p *PluginKasaPlugin) Initialize(ctx runner.PluginContext) (types.Manifest, error) {
+	p.pluginCtx = ctx
 	p.client = kasa.NewRealClient()
-	p.failures = make(map[string]int)
-	p.ctx, p.cancel = context.WithCancel(context.Background())
-	p.rawStore = config.RawStore
+	p.macToIP = make(map[string]string)
 
-	return types.Manifest{ID: "plugin-kasa", Name: "Kasa Plugin", Version: "1.0.0", Schemas: types.CoreDomains()}, state
+	return types.Manifest{ID: "plugin-kasa", Name: "Kasa Plugin", Version: "1.0.0", Schemas: types.CoreDomains()}, nil
 }
 
-func (p *PluginKasaPlugin) OnReady() {
-	// Background discovery is disabled per SDK principles
-	// Discovery happens lazily in OnDeviceDiscover
-	// We only set up the UDP listener to receive broadcast responses
+func (p *PluginKasaPlugin) Start(ctx context.Context) error {
+	p.runCtx, p.cancel = context.WithCancel(context.Background())
+	p.ensureCoreState()
+	p.reconcileRegistry()
+
 	stop, err := p.client.ListenUDP(func(ip string, info kasa.KasaSysInfo) {
 		mac := normalizeMac(info.Mac)
-		// Store MAC-to-IP mapping in RawStore
-		if p.rawStore != nil {
-			cfgData, _ := json.Marshal(map[string]string{"ip": ip})
-			_ = p.rawStore.WriteRawDevice(mac, cfgData)
+		if mac != "" {
+			p.setIPForMAC(mac, ip)
 		}
 	})
 	if err != nil {
-		// UDP listener failed - discovery will rely on static IPs only
-		return
+		// UDP listener failed — discovery relies on static IPs only
+		stop = func() {}
 	}
+
+	p.wg.Add(1)
 	go func() {
-		<-p.ctx.Done()
+		defer p.wg.Done()
+		<-p.runCtx.Done()
 		stop()
 	}()
-}
 
-func (p *PluginKasaPlugin) WaitReady(ctx context.Context) error {
-	return nil
-}
-
-func (p *PluginKasaPlugin) OnShutdown() {
-	if p.cancel != nil {
-		p.cancel()
-	}
-}
-
-func (p *PluginKasaPlugin) OnHealthCheck() (string, error) { return "perfect", nil }
-
-func (p *PluginKasaPlugin) OnConfigUpdate(current types.Storage) (types.Storage, error) {
-	// IP mappings are now stored in RawStore, not in Storage
-	return current, nil
-}
-
-func (p *PluginKasaPlugin) OnDeviceCreate(dev types.Device) (types.Device, error) {
-	// Store device-specific config in RawStore if IP is provided
-	mac := normalizeMac(strings.Split(dev.SourceID, "-")[0])
-	var cfg struct {
-		IP string `json:"ip"`
-	}
-	if p.rawStore != nil {
-		if raw, err := p.rawStore.ReadRawDevice(dev.ID); err == nil {
-			json.Unmarshal(raw, &cfg)
-		}
-	}
-	if cfg.IP != "" {
-		// Store MAC-to-IP mapping in RawStore
-		if p.rawStore != nil {
-			macData, _ := json.Marshal(map[string]string{"ip": cfg.IP})
-			_ = p.rawStore.WriteRawDevice(mac, macData)
-		}
-	}
-	return dev, nil
-}
-
-func (p *PluginKasaPlugin) OnDeviceUpdate(dev types.Device) (types.Device, error) {
-	// No longer maintaining deviceMap - SDK manages device state
-	return dev, nil
-}
-
-func (p *PluginKasaPlugin) OnDeviceDelete(id string) error {
-	// No longer maintaining deviceMap - SDK manages device state
-	return nil
-}
-
-func (p *PluginKasaPlugin) OnDeviceDiscover(current []types.Device) ([]types.Device, error) {
-	// Build existing device lookup map from current slice
-	existing := make(map[string]types.Device)
-	for _, dev := range current {
-		existing[dev.ID] = dev
-
-		// Load device-specific IP config and store in RawStore as MAC-to-IP mapping
-		mac := normalizeMac(strings.Split(dev.SourceID, "-")[0])
-		var cfg struct {
-			IP string `json:"ip"`
-		}
-		if p.rawStore != nil {
-			if raw, err := p.rawStore.ReadRawDevice(dev.ID); err == nil {
-				json.Unmarshal(raw, &cfg)
-			}
-		}
-		if cfg.IP != "" {
-			// Store/update MAC-to-IP mapping in RawStore
-			if p.rawStore != nil {
-				// Check if we already have this mapping
-				if existingRaw, err := p.rawStore.ReadRawDevice(mac); err != nil || len(existingRaw) == 0 {
-					macData, _ := json.Marshal(map[string]string{"ip": cfg.IP})
-					_ = p.rawStore.WriteRawDevice(mac, macData)
+	if boolEnv("KASA_DISCOVERY_ACTIVE", true) {
+		intervalSec := intEnv("KASA_DISCOVERY_SCAN_INTERVAL_SEC", 180)
+		interval := time.Duration(intervalSec) * time.Second
+		p.wg.Add(1)
+		go func() {
+			defer p.wg.Done()
+			t := time.NewTicker(interval)
+			defer t.Stop()
+			for {
+				select {
+				case <-p.runCtx.Done():
+					return
+				case <-t.C:
+					p.reconcileRegistry()
 				}
 			}
-		}
+		}()
 	}
 
-	// Get candidate IPs for discovery from environment
+	_ = ctx
+	return nil
+}
+
+func (p *PluginKasaPlugin) Stop() error {
+	if p.cancel != nil {
+		p.cancel()
+		p.wg.Wait()
+	}
+	return nil
+}
+
+func (p *PluginKasaPlugin) OnReset() error {
+	if p.pluginCtx.Registry == nil {
+		return nil
+	}
+	for _, dev := range p.pluginCtx.Registry.LoadDevices() {
+		_ = p.pluginCtx.Registry.DeleteDevice(dev.ID)
+	}
+	return p.pluginCtx.Registry.DeleteState()
+}
+
+func (p *PluginKasaPlugin) ensureCoreState() {
+	if p.pluginCtx.Registry == nil {
+		return
+	}
+	coreID := types.CoreDeviceID("plugin-kasa")
+	_ = p.pluginCtx.Registry.SaveDevice(types.Device{
+		ID:         coreID,
+		SourceID:   coreID,
+		SourceName: "plugin-kasa",
+		LocalName:  "plugin-kasa",
+	})
+	for _, ent := range types.CoreEntities("plugin-kasa") {
+		_ = p.pluginCtx.Registry.SaveEntity(ent)
+	}
+}
+
+func (p *PluginKasaPlugin) reconcileRegistry() {
+	if p.pluginCtx.Registry == nil {
+		return
+	}
+	devices, err := p.discoverDevices()
+	if err != nil {
+		return
+	}
+
+	for _, dev := range devices {
+		if dev.ID == "" {
+			continue
+		}
+		_ = p.pluginCtx.Registry.SaveDevice(dev)
+		if dev.ID == types.CoreDeviceID("plugin-kasa") {
+			continue
+		}
+		entities, err := p.entitiesForDevice(dev.ID)
+		if err != nil {
+			continue
+		}
+		for _, ent := range entities {
+			_ = p.pluginCtx.Registry.SaveEntity(ent)
+		}
+	}
+}
+
+// discoverDevices returns the current list of devices: the core plugin device
+// plus one device per responding Kasa device. It also populates macToIP as a
+// side effect so subsequent entitiesForDevice calls can find their IPs.
+func (p *PluginKasaPlugin) discoverDevices() ([]types.Device, error) {
+	coreID := types.CoreDeviceID("plugin-kasa")
+	byID := map[string]types.Device{
+		coreID: {ID: coreID, SourceID: coreID, SourceName: "Kasa Plugin"},
+	}
+
 	candidates := parseIPs(os.Getenv("KASA_STATIC_IPS"))
 	candidates = append(candidates, subnetCandidates()...)
 
-	// Also query RawStore for any known MAC-to-IP mappings we've discovered previously
-	// Note: We can't easily enumerate all keys in RawStore, so we rely on:
-	// 1. UDP discovery callback storing mappings
-	// 2. Static IPs from environment
-	// 3. Device config lookups during command handling
+	// Include any IPs already learned via UDP.
+	p.macMu.RLock()
+	for _, ip := range p.macToIP {
+		candidates = append(candidates, ip)
+	}
+	p.macMu.RUnlock()
 
-	var newDevices []types.Device
-
-	// Perform active discovery on candidate IPs
-	if len(candidates) > 0 {
-		seen := map[string]struct{}{}
-		uniq := make([]string, 0, len(candidates))
-		for _, ip := range candidates {
-			if _, ok := seen[ip]; ok {
-				continue
-			}
-			seen[ip] = struct{}{}
-			uniq = append(uniq, ip)
+	if len(candidates) == 0 {
+		out := make([]types.Device, 0, len(byID))
+		for _, dev := range byID {
+			out = append(out, dev)
 		}
+		return out, nil
+	}
 
-		timeoutMs := intEnv("KASA_DISCOVERY_TIMEOUT_MS", 400)
-		concurrency := intEnv("KASA_DISCOVERY_CONCURRENCY", 64)
-		timeout := time.Duration(timeoutMs) * time.Millisecond
-		sem := make(chan struct{}, concurrency)
-		var wg sync.WaitGroup
-		var mu sync.Mutex
+	// Deduplicate
+	seen := map[string]struct{}{}
+	uniq := make([]string, 0, len(candidates))
+	for _, ip := range candidates {
+		if _, ok := seen[ip]; ok {
+			continue
+		}
+		seen[ip] = struct{}{}
+		uniq = append(uniq, ip)
+	}
 
-		for _, ip := range uniq {
-			ip := ip
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				sem <- struct{}{}
-				defer func() { <-sem }()
-				info, err := quickGetSysInfo(ip, timeout)
-				if err != nil {
-					return
-				}
-				mac := normalizeMac(info.Mac)
-				if mac == "" {
-					return
-				}
+	timeoutMs := intEnv("KASA_DISCOVERY_TIMEOUT_MS", 400)
+	concurrency := intEnv("KASA_DISCOVERY_CONCURRENCY", 64)
+	timeout := time.Duration(timeoutMs) * time.Millisecond
+	sem := make(chan struct{}, concurrency)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
 
-				// Store MAC-to-IP mapping in RawStore
-				if p.rawStore != nil {
-					cfgData, _ := json.Marshal(map[string]string{"ip": ip})
-					_ = p.rawStore.WriteRawDevice(mac, cfgData)
-				}
+	for _, ip := range uniq {
+		ip := ip
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			info, err := quickGetSysInfo(ip, timeout)
+			if err != nil {
+				return
+			}
+			mac := normalizeMac(info.Mac)
+			if mac == "" {
+				return
+			}
+			p.setIPForMAC(mac, ip)
 
-				mu.Lock()
-				defer mu.Unlock()
+			mu.Lock()
+			defer mu.Unlock()
 
-				// Only register if the base MAC device isn't already registered
-				if _, ok := existing[mac]; !ok {
-					cfgData, _ := json.Marshal(map[string]string{"ip": ip})
-
-					// If it has children, register each child as a device
-					if len(info.Children) > 0 {
-						for _, child := range info.Children {
-							childID := mac + "-" + child.ID
-							if _, exists := existing[childID]; !exists {
-								if p.rawStore != nil {
-									_ = p.rawStore.WriteRawDevice(childID, cfgData)
-								}
-								dev := types.Device{
-									ID:         childID,
-									SourceID:   childID,
-									SourceName: "Kasa " + info.Model + " Outlet",
-									LocalName:  child.Alias,
-								}
-								newDevices = append(newDevices, dev)
-							}
-						}
-					} else {
-						if p.rawStore != nil {
-							_ = p.rawStore.WriteRawDevice(mac, cfgData)
-						}
-						dev := runner.ReconcileDevice(types.Device{}, types.Device{
-							ID:         mac,
-							SourceID:   mac,
-							SourceName: "Kasa " + info.Model,
-							LocalName:  info.Alias,
-						})
-						newDevices = append(newDevices, dev)
+			if len(info.Children) > 0 {
+				for _, child := range info.Children {
+					childID := mac + "-" + child.ID
+					byID[childID] = types.Device{
+						ID:         childID,
+						SourceID:   childID,
+						SourceName: "Kasa " + info.Model + " Outlet",
+						LocalName:  child.Alias,
 					}
 				}
-			}()
-		}
-		wg.Wait()
+			} else {
+				byID[mac] = types.Device{
+					ID:         mac,
+					SourceID:   mac,
+					SourceName: "Kasa " + info.Model,
+					LocalName:  info.Alias,
+				}
+			}
+		}()
 	}
+	wg.Wait()
 
-	if len(newDevices) > 0 {
-		current = append(current, newDevices...)
+	out := make([]types.Device, 0, len(byID))
+	for _, dev := range byID {
+		out = append(out, dev)
 	}
-
-	return runner.EnsureCoreDevice("plugin-kasa", current), nil
+	return out, nil
 }
 
-func (p *PluginKasaPlugin) OnDeviceSearch(q types.SearchQuery, res []types.Device) ([]types.Device, error) {
-	return res, nil
-}
-
-func (p *PluginKasaPlugin) OnEntityCreate(e types.Entity) (types.Entity, error) { return e, nil }
-func (p *PluginKasaPlugin) OnEntityUpdate(e types.Entity) (types.Entity, error) { return e, nil }
-func (p *PluginKasaPlugin) OnEntityDelete(d, e string) error                    { return nil }
-
-func (p *PluginKasaPlugin) OnEntityDiscover(deviceID string, current []types.Entity) ([]types.Entity, error) {
-	current = runner.EnsureCoreEntities("plugin-kasa", deviceID, current)
-
-	// Get MAC from deviceID (they're the same for Kasa devices)
-	mac := normalizeMac(deviceID)
-
-	// Get IP from RawStore
+// entitiesForDevice returns the entities for the given device ID.
+func (p *PluginKasaPlugin) entitiesForDevice(deviceID string) ([]types.Entity, error) {
+	mac := normalizeMac(strings.Split(deviceID, "-")[0])
 	ip := p.getIPForMAC(mac)
 	if ip == "" {
-		return current, nil
+		return nil, nil
 	}
 
 	info, err := p.client.GetSysInfo(ip)
 	if err != nil {
-		return current, nil
+		return nil, nil
 	}
 
-	var discovered []types.Entity
+	var entities []types.Entity
 	if len(info.Children) > 0 {
-		// Identify which child this device represents
 		parts := strings.Split(deviceID, "-")
 		if len(parts) > 1 {
 			childID := parts[1]
 			for _, child := range info.Children {
 				if child.ID == childID {
-					discovered = append(discovered, types.Entity{
+					entities = append(entities, types.Entity{
 						ID:        "power",
 						DeviceID:  deviceID,
 						Domain:    entityswitch.Type,
@@ -293,7 +277,7 @@ func (p *PluginKasaPlugin) OnEntityDiscover(deviceID string, current []types.Ent
 			}
 		}
 	} else if info.IsLight() {
-		discovered = append(discovered, types.Entity{
+		entities = append(entities, types.Entity{
 			ID:        "light",
 			DeviceID:  deviceID,
 			Domain:    light.Type,
@@ -301,7 +285,7 @@ func (p *PluginKasaPlugin) OnEntityDiscover(deviceID string, current []types.Ent
 			Actions:   light.SupportedActions(),
 		})
 	} else {
-		discovered = append(discovered, types.Entity{
+		entities = append(entities, types.Entity{
 			ID:        "power",
 			DeviceID:  deviceID,
 			Domain:    entityswitch.Type,
@@ -310,40 +294,7 @@ func (p *PluginKasaPlugin) OnEntityDiscover(deviceID string, current []types.Ent
 		})
 	}
 
-	for _, d := range discovered {
-		if !entityExists(current, d.ID) {
-			current = append(current, d)
-		}
-	}
-
-	return current, nil
-}
-
-func entityExists(current []types.Entity, id string) bool {
-	for _, e := range current {
-		if e.ID == id {
-			return true
-		}
-	}
-	return false
-}
-
-// getIPForMAC retrieves the IP address for a given MAC from RawStore
-func (p *PluginKasaPlugin) getIPForMAC(mac string) string {
-	if p.rawStore == nil {
-		return ""
-	}
-	raw, err := p.rawStore.ReadRawDevice(mac)
-	if err != nil {
-		return ""
-	}
-	var cfg struct {
-		IP string `json:"ip"`
-	}
-	if err := json.Unmarshal(raw, &cfg); err != nil {
-		return ""
-	}
-	return cfg.IP
+	return entities, nil
 }
 
 // getDeviceState queries the device and returns the current state
@@ -359,11 +310,10 @@ func (p *PluginKasaPlugin) getDeviceState(deviceID string) (*kasa.KasaSysInfo, e
 // emitDeviceState polls a device and emits its current state as events
 func (p *PluginKasaPlugin) emitDeviceState(deviceID string) {
 	info, err := p.getDeviceState(deviceID)
-	if err != nil {
+	if err != nil || info == nil {
 		return
 	}
 
-	// Handle multi-outlet devices (children)
 	if len(info.Children) > 0 {
 		parts := strings.Split(deviceID, "-")
 		if len(parts) > 1 {
@@ -412,15 +362,17 @@ func (p *PluginKasaPlugin) emitState(deviceID, entityID string, power bool, ligh
 		payload, _ = json.Marshal(entityswitch.Event{Type: eventType})
 	}
 
-	p.sink.EmitEvent(types.InboundEvent{
+	if p.pluginCtx.Events == nil {
+		return
+	}
+	_ = p.pluginCtx.Events.PublishEvent(types.InboundEvent{
 		DeviceID: deviceID,
 		EntityID: entityID,
 		Payload:  json.RawMessage(payload),
 	})
 }
 
-func (p *PluginKasaPlugin) OnCommand(req types.Command, entity types.Entity) (types.Entity, error) {
-	// Extract MAC from deviceID (SourceID is typically MAC or MAC-childID)
+func (p *PluginKasaPlugin) runCommand(req types.Command, entity types.Entity) (types.Entity, error) {
 	mac := normalizeMac(strings.Split(entity.DeviceID, "-")[0])
 	ip := p.getIPForMAC(mac)
 
@@ -430,7 +382,6 @@ func (p *PluginKasaPlugin) OnCommand(req types.Command, entity types.Entity) (ty
 		return entity, err
 	}
 
-	// Extract child ID if any from deviceID
 	childID := ""
 	parts := strings.Split(entity.DeviceID, "-")
 	if len(parts) > 1 {
@@ -468,22 +419,24 @@ func (p *PluginKasaPlugin) OnCommand(req types.Command, entity types.Entity) (ty
 	}
 
 	if err != nil {
-		// Map network errors to standardized error types
 		mappedErr := p.mapNetworkError(err)
 		p.setEntityError(&entity, mappedErr)
 		return entity, mappedErr
 	}
 
-	// Success - set sync status to synced
 	p.setEntitySuccess(&entity)
 
-	// Optimistically update entity data
 	go func() {
-		time.Sleep(500 * time.Millisecond) // Give it a moment to apply
+		time.Sleep(500 * time.Millisecond)
 		p.emitDeviceState(entity.DeviceID)
 	}()
 
 	return entity, nil
+}
+
+func (p *PluginKasaPlugin) OnCommand(req types.Command, entity types.Entity) error {
+	_, err := p.runCommand(req, entity)
+	return err
 }
 
 func (p *PluginKasaPlugin) handleLightCommand(ip, childID string, cmd light.Command) error {
@@ -500,7 +453,6 @@ func (p *PluginKasaPlugin) handleLightCommand(ip, childID string, cmd light.Comm
 		params := builder.LightParamsTemperature(*cmd.Temperature, 1)
 		return p.client.SetLightState(ip, params)
 	case light.ActionSetRGB:
-		// Convert RGB to HSV for Kasa
 		h, s, v := rgbToHsv((*cmd.RGB)[0], (*cmd.RGB)[1], (*cmd.RGB)[2])
 		params := builder.LightParamsHSV(h, s, v, 1)
 		return p.client.SetLightState(ip, params)
@@ -518,56 +470,11 @@ func (p *PluginKasaPlugin) handleSwitchCommand(ip, childID string, cmd entityswi
 	return nil
 }
 
-func (p *PluginKasaPlugin) OnEvent(evt types.Event, entity types.Entity) (types.Entity, error) {
-	// Sync entity state from event
-	if entity.Domain == light.Type {
-		store := light.Bind(&entity)
-		var levt light.Event
-		if err := json.Unmarshal(evt.Payload, &levt); err != nil {
-			p.setEntityError(&entity, err)
-			return entity, err
-		}
-		if err := light.ValidateEvent(levt); err != nil {
-			p.setEntityError(&entity, err)
-			return entity, err
-		}
-		if err := store.SetReportedFromEvent(levt); err != nil {
-			p.setEntityError(&entity, err)
-			return entity, err
-		}
-		p.setEntitySuccess(&entity)
-	} else if entity.Domain == entityswitch.Type {
-		store := entityswitch.Bind(&entity)
-		var sevt entityswitch.Event
-		if err := json.Unmarshal(evt.Payload, &sevt); err != nil {
-			p.setEntityError(&entity, err)
-			return entity, err
-		}
-		if err := entityswitch.ValidateEvent(sevt); err != nil {
-			p.setEntityError(&entity, err)
-			return entity, err
-		}
-		if err := store.SetReportedFromEvent(sevt); err != nil {
-			p.setEntityError(&entity, err)
-			return entity, err
-		}
-		p.setEntitySuccess(&entity)
-	}
-	return entity, nil
-}
-
 // setEntityError sets the entity state to failed with error information
 func (p *PluginKasaPlugin) setEntityError(entity *types.Entity, err error) {
-	// Set sync status to failed
 	entity.Data.SyncStatus = types.SyncStatusFailed
 	entity.Data.UpdatedAt = time.Now()
-
-	// Create error state with error information
-	errorState := map[string]interface{}{
-		"error": err.Error(),
-	}
-
-	// Marshal error state to reported
+	errorState := map[string]interface{}{"error": err.Error()}
 	if reportedBytes, jsonErr := json.Marshal(errorState); jsonErr == nil {
 		entity.Data.Reported = reportedBytes
 	}
@@ -584,31 +491,37 @@ func (p *PluginKasaPlugin) mapNetworkError(err error) error {
 	if err == nil {
 		return nil
 	}
-
 	errStr := err.Error()
-
-	// Check for timeout-related errors
 	if strings.Contains(errStr, "timeout") || strings.Contains(errStr, "deadline exceeded") {
 		return kasa.ErrTimeout
 	}
-
-	// Check for connection refused or unreachable
 	if strings.Contains(errStr, "connection refused") || strings.Contains(errStr, "no route to host") || strings.Contains(errStr, "host is down") {
 		return kasa.ErrOffline
 	}
-
-	// Check for network errors
 	if strings.Contains(errStr, "network") || strings.Contains(errStr, "dial") {
 		return kasa.ErrNetwork
 	}
-
-	// Check for invalid response
 	if strings.Contains(errStr, "invalid") || strings.Contains(errStr, "unmarshal") {
 		return kasa.ErrInvalidResponse
 	}
-
-	// Default to unknown error
 	return fmt.Errorf("%w: %v", kasa.ErrUnknown, err)
+}
+
+// getIPForMAC retrieves the IP address for a given MAC from the in-memory map.
+func (p *PluginKasaPlugin) getIPForMAC(mac string) string {
+	p.macMu.RLock()
+	defer p.macMu.RUnlock()
+	return p.macToIP[mac]
+}
+
+// setIPForMAC stores a MAC → IP mapping in the in-memory map.
+func (p *PluginKasaPlugin) setIPForMAC(mac, ip string) {
+	p.macMu.Lock()
+	defer p.macMu.Unlock()
+	if p.macToIP == nil {
+		p.macToIP = make(map[string]string)
+	}
+	p.macToIP[mac] = ip
 }
 
 // Helper functions
