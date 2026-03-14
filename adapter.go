@@ -349,17 +349,9 @@ func (p *PluginKasaPlugin) emitDeviceState(deviceID string) {
 func (p *PluginKasaPlugin) emitState(deviceID, entityID string, power bool, lightState *light.State) {
 	var payload []byte
 	if lightState != nil {
-		eventType := light.ActionTurnOff
-		if lightState.Power {
-			eventType = light.ActionTurnOn
-		}
-		payload, _ = json.Marshal(light.Event{Type: eventType})
+		payload, _ = json.Marshal(lightState)
 	} else {
-		eventType := entityswitch.ActionTurnOff
-		if power {
-			eventType = entityswitch.ActionTurnOn
-		}
-		payload, _ = json.Marshal(entityswitch.Event{Type: eventType})
+		payload, _ = json.Marshal(entityswitch.State{Power: power})
 	}
 
 	if p.pluginCtx.Events == nil {

@@ -276,15 +276,9 @@ func sendKasaCommand(t *testing.T, s *integrationtesting.Suite, deviceID, entity
 	return status
 }
 
-// waitForPowerState polls the entity's reported state until the event type matches.
-// The runner stores the raw event payload as Reported, so for a switch entity
-// Reported is {"type":"turn_on"} or {"type":"turn_off"}.
+// waitForPowerState polls the entity's reported state until the canonical power state matches.
 func waitForPowerState(t *testing.T, s *integrationtesting.Suite, deviceID, entityID string, wantOn bool, timeout time.Duration) {
 	t.Helper()
-	wantType := "turn_off"
-	if wantOn {
-		wantType = "turn_on"
-	}
 	path := fmt.Sprintf("/api/plugins/%s/devices/%s/entities", kasaLocalPluginID, deviceID)
 	ok := s.WaitFor(timeout, func() bool {
 		var entities []types.Entity
@@ -302,12 +296,12 @@ func waitForPowerState(t *testing.T, s *integrationtesting.Suite, deviceID, enti
 			if err := json.Unmarshal(ent.Data.Reported, &state); err != nil {
 				return false
 			}
-			evtType, _ := state["type"].(string)
-			return evtType == wantType
+			power, ok := state["power"].(bool)
+			return ok && power == wantOn
 		}
 		return false
 	})
 	if !ok {
-		t.Fatalf("entity %s/%s never reached type=%q within %s", deviceID, entityID, wantType, timeout)
+		t.Fatalf("entity %s/%s never reached power=%v within %s", deviceID, entityID, wantOn, timeout)
 	}
 }
