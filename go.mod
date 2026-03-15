@@ -4,9 +4,9 @@ go 1.25.7
 
 require (
 	github.com/cucumber/godog v0.15.1
-	github.com/slidebolt/sdk-integration-testing v0.0.5
-	github.com/slidebolt/sdk-runner v1.20.6
-	github.com/slidebolt/sdk-types v1.20.7
+	github.com/slidebolt/sdk-integration-testing v0.0.7
+	github.com/slidebolt/sdk-runner v1.20.9
+	github.com/slidebolt/sdk-types v1.20.9
 	github.com/stretchr/testify v1.11.1
 )
 
@@ -22,7 +22,7 @@ require (
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/robfig/cron/v3 v3.0.1 // indirect
 	github.com/rogpeppe/go-internal v1.14.1 // indirect
-	github.com/slidebolt/registry v0.0.5 // indirect
+	github.com/slidebolt/registry v0.0.7 // indirect
 	github.com/spf13/pflag v1.0.10 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
@@ -32,7 +32,7 @@ require (
 	github.com/nats-io/nats.go v1.49.0 // indirect
 	github.com/nats-io/nkeys v0.4.15 // indirect
 	github.com/nats-io/nuid v1.0.1 // indirect
-	github.com/slidebolt/sdk-entities v1.20.4
+	github.com/slidebolt/sdk-entities v1.20.6
 	golang.org/x/crypto v0.48.0 // indirect
 	golang.org/x/sys v0.42.0 // indirect
 )
