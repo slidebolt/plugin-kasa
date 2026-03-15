@@ -25,3 +25,5 @@ plugin-*
 TASKS/
 
 scripts/.release_guard
+
+**/.env.local
