@@ -1,5 +1,7 @@
 //go:build local
 
+//go:build local
+
 package main
 
 import (
