@@ -15,10 +15,10 @@ import (
 )
 
 type apiFeatureContext struct {
-	testingT  *testing.T
-	baseURL   string
-	client    *http.Client
-	pluginID  string
+	testingT *testing.T
+	baseURL  string
+	client   *http.Client
+	pluginID string
 
 	lastResponse *http.Response
 	lastBody     []byte
@@ -55,7 +55,7 @@ func (c *apiFeatureContext) iMakeARequest(method, path string, body *godog.DocSt
 
 	c.lastResponse, err = c.client.Do(req)
 	require.NoError(c.testingT, err, "Failed to execute request")
-	
+
 	defer c.lastResponse.Body.Close()
 	c.lastBody, err = io.ReadAll(c.lastResponse.Body)
 	require.NoError(c.testingT, err, "Failed to read response body")
