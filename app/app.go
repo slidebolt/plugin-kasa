@@ -128,7 +128,8 @@ func (a *App) discoveryLoop() {
 func (a *App) discoverAndRegister() error {
 	subnet := os.Getenv("KASA_SUBNET")
 	if subnet == "" {
-		subnet = "192.168.88"
+		log.Println("plugin-kasa: KASA_SUBNET not set; skipping discovery")
+		return nil
 	}
 
 	timeout := 400 * time.Millisecond
