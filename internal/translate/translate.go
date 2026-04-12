@@ -14,12 +14,21 @@ import (
 )
 
 type SysInfo struct {
+	Alias      string      `json:"alias"`
+	Model      string      `json:"model"`
+	Mac        string      `json:"mac"`
+	DeviceID   string      `json:"deviceId"`
+	DevType    string      `json:"type"`
+	MicType    string      `json:"mic_type"`
+	RelayState *int        `json:"relay_state"`
+	Children   []ChildInfo `json:"children"`
+	ChildNum   int         `json:"child_num"`
+}
+
+type ChildInfo struct {
+	ID         string `json:"id"`
 	Alias      string `json:"alias"`
-	Model      string `json:"model"`
-	Mac        string `json:"mac"`
-	DevType    string `json:"type"`
-	MicType    string `json:"mic_type"`
-	RelayState int    `json:"relay_state"`
+	RelayState int    `json:"state"`
 }
 
 type Response struct {
@@ -165,8 +174,30 @@ func GetDeviceInfo(ip string) (*SysInfo, error) {
 }
 
 func SetPower(ip string, state int) error {
-	cmd := fmt.Sprintf(`{"system":{"set_relay_state":{"state":%d}}}`, state)
-	payload := EncryptWithHeader(cmd)
+	return sendCommand(ip, map[string]any{
+		"system": map[string]any{
+			"set_relay_state": map[string]int{"state": state},
+		},
+	})
+}
+
+func SetChildPower(ip, childID string, state int) error {
+	return sendCommand(ip, map[string]any{
+		"context": map[string]any{
+			"child_ids": []string{childID},
+		},
+		"system": map[string]any{
+			"set_relay_state": map[string]int{"state": state},
+		},
+	})
+}
+
+func sendCommand(ip string, cmd any) error {
+	data, err := json.Marshal(cmd)
+	if err != nil {
+		return err
+	}
+	payload := EncryptWithHeader(string(data))
 
 	conn, err := net.DialTimeout("tcp", ip+":9999", 2*time.Second)
 	if err != nil {
@@ -185,4 +216,21 @@ func MakeDeviceID(mac string) string {
 		cleaned = "unknown"
 	}
 	return "kasa-" + cleaned
+}
+
+func MakeChildEntityID(parentDeviceID, childID string) string {
+	parentToken := strings.ToLower(strings.TrimSpace(parentDeviceID))
+	childToken := strings.ToLower(strings.TrimSpace(childID))
+	suffix := childToken
+	if parentToken != "" && strings.HasPrefix(childToken, parentToken) {
+		suffix = strings.TrimPrefix(childToken, parentToken)
+	}
+	suffix = strings.Trim(suffix, " -_:")
+	if suffix == "" {
+		suffix = childToken
+	}
+	if suffix == "" {
+		suffix = "unknown"
+	}
+	return "outlet-" + suffix
 }

@@ -32,6 +32,13 @@ func init() {
 	domain.Register("kasa_switch", domain.Switch{})
 }
 
+var (
+	discoverDevices = translate.DiscoverDevices
+	getDeviceInfo   = translate.GetDeviceInfo
+	setPower        = translate.SetPower
+	setChildPower   = translate.SetChildPower
+)
+
 type App struct {
 	msg    messenger.Messenger
 	store  storage.Storage
@@ -41,10 +48,11 @@ type App struct {
 	cancel context.CancelFunc
 	ticker *time.Ticker
 
-	mu      sync.RWMutex
-	devices []translate.SysInfo
-	ipMap   map[string]string
-	seen    map[string]struct{}
+	mu             sync.RWMutex
+	devices        []translate.SysInfo
+	ipMap          map[string]string
+	seen           map[string]struct{}
+	entityChildIDs map[string]string
 }
 
 func New() *App { return &App{} }
@@ -73,6 +81,7 @@ func (a *App) OnStart(deps map[string]json.RawMessage) (json.RawMessage, error) 
 
 	a.ipMap = make(map[string]string)
 	a.seen = make(map[string]struct{})
+	a.entityChildIDs = make(map[string]string)
 
 	a.cmds = messenger.NewCommands(msg, domain.LookupCommand)
 	sub, err := a.cmds.Receive(PluginID+".>", a.handleCommand)
@@ -139,7 +148,7 @@ func (a *App) discoverAndRegister() error {
 		}
 	}
 
-	devices, err := translate.DiscoverDevices(subnet, timeout)
+	devices, err := discoverDevices(subnet, timeout)
 	if err != nil {
 		return err
 	}
@@ -148,41 +157,7 @@ func (a *App) discoverAndRegister() error {
 	a.devices = devices
 	a.mu.Unlock()
 	for _, dev := range devices {
-		deviceID := translate.MakeDeviceID(dev.Mac)
-		a.mu.Lock()
-		_, alreadySeen := a.seen[deviceID]
-		a.seen[deviceID] = struct{}{}
-		a.mu.Unlock()
-
-		deviceType := "kasa_switch"
-		if strings.Contains(strings.ToLower(dev.Model), "bulb") ||
-			strings.Contains(strings.ToLower(dev.Model), "kl") {
-			deviceType = "light"
-		}
-
-		entity := domain.Entity{
-			ID:       deviceID,
-			Plugin:   PluginID,
-			DeviceID: deviceID,
-			Type:     deviceType,
-			Name:     dev.Alias,
-			Commands: []string{
-				"switch_turn_on", "switch_turn_off", "switch_toggle",
-			},
-			State: domain.Switch{
-				Power: dev.RelayState == 1,
-			},
-			Meta: map[string]json.RawMessage{
-				"model": json.RawMessage(fmt.Sprintf(`"%s"`, dev.Model)),
-				"mac":   json.RawMessage(fmt.Sprintf(`"%s"`, dev.Mac)),
-			},
-		}
-
-		if err := a.store.Save(entity); err != nil {
-			log.Printf("plugin-kasa: failed to save entity %s: %v", deviceID, err)
-		} else if !alreadySeen {
-			log.Printf("plugin-kasa: registered %s (%s)", dev.Alias, deviceID)
-		}
+		a.registerDiscoveredDevice(dev)
 	}
 
 	a.refreshIPMappings(subnet)
@@ -194,11 +169,8 @@ func (a *App) refreshIPMappings(subnet string) {
 	for i := 1; i <= 254; i++ {
 		ip := base + strconv.Itoa(i)
 		go func(targetIP string) {
-			if info, err := translate.GetDeviceInfo(targetIP); err == nil {
-				deviceID := translate.MakeDeviceID(info.Mac)
-				a.mu.Lock()
-				a.ipMap[deviceID] = targetIP
-				a.mu.Unlock()
+			if info, err := getDeviceInfo(targetIP); err == nil {
+				a.recordIPMappings(*info, targetIP)
 			}
 		}(ip)
 	}
@@ -215,12 +187,12 @@ func (a *App) getDeviceIP(deviceID string) string {
 }
 
 func (a *App) handleCommand(addr messenger.Address, cmd any) {
-	ip := a.getDeviceIP(addr.EntityID)
+	ip := a.getDeviceIP(addr.DeviceID)
 	if ip == "" {
-		log.Printf("plugin-kasa: no IP for device %s, attempting refresh", addr.EntityID)
-		ip = a.lookupIPFromStorage(addr.EntityID)
+		log.Printf("plugin-kasa: no IP for device %s, attempting refresh", addr.DeviceID)
+		ip = a.lookupIPFromStorage(addr.DeviceID)
 		if ip == "" {
-			log.Printf("plugin-kasa: still no IP for device %s", addr.EntityID)
+			log.Printf("plugin-kasa: still no IP for device %s", addr.DeviceID)
 			return
 		}
 	}
@@ -243,17 +215,19 @@ func (a *App) handleCommand(addr messenger.Address, cmd any) {
 		return
 	}
 
+	childID := a.getEntityChildID(addr.DeviceID, addr.EntityID)
+
 	switch cmd.(type) {
 	case domain.SwitchTurnOn:
 		log.Printf("plugin-kasa: switch %s turn_on", addr.Key())
-		if err := translate.SetPower(ip, 1); err != nil {
+		if err := a.setRelayPower(ip, childID, 1); err != nil {
 			log.Printf("plugin-kasa: failed to turn on %s: %v", addr.Key(), err)
 		} else {
 			a.updateSwitchState(entity, func(s *domain.Switch) { s.Power = true })
 		}
 	case domain.SwitchTurnOff:
 		log.Printf("plugin-kasa: switch %s turn_off", addr.Key())
-		if err := translate.SetPower(ip, 0); err != nil {
+		if err := a.setRelayPower(ip, childID, 0); err != nil {
 			log.Printf("plugin-kasa: failed to turn off %s: %v", addr.Key(), err)
 		} else {
 			a.updateSwitchState(entity, func(s *domain.Switch) { s.Power = false })
@@ -265,7 +239,7 @@ func (a *App) handleCommand(addr messenger.Address, cmd any) {
 			if !sw.Power {
 				newState = 1
 			}
-			if err := translate.SetPower(ip, newState); err != nil {
+			if err := a.setRelayPower(ip, childID, newState); err != nil {
 				log.Printf("plugin-kasa: failed to toggle %s: %v", addr.Key(), err)
 			} else {
 				a.updateSwitchState(entity, func(s *domain.Switch) { s.Power = !sw.Power })
@@ -278,6 +252,141 @@ func (a *App) handleCommand(addr messenger.Address, cmd any) {
 
 func (a *App) lookupIPFromStorage(deviceID string) string {
 	return ""
+}
+
+func (a *App) registerDiscoveredDevice(dev translate.SysInfo) {
+	parentDeviceID := translate.MakeDeviceID(dev.Mac)
+	currentEntityIDs := make(map[string]struct{})
+	deviceType := "kasa_switch"
+	if strings.Contains(strings.ToLower(dev.Model), "bulb") ||
+		strings.Contains(strings.ToLower(dev.Model), "kl") {
+		deviceType = "light"
+	}
+
+	if len(dev.Children) == 0 {
+		currentEntityIDs[parentDeviceID] = struct{}{}
+		a.clearEntityChildID(parentDeviceID, parentDeviceID)
+		a.saveDiscoveredEntity(domain.Entity{
+			ID:       parentDeviceID,
+			Plugin:   PluginID,
+			DeviceID: parentDeviceID,
+			Type:     deviceType,
+			Name:     strings.TrimSpace(dev.Alias),
+			Commands: []string{"switch_turn_on", "switch_turn_off", "switch_toggle"},
+			State: domain.Switch{
+				Power: relayStateFromSysInfo(dev),
+			},
+			Meta: map[string]json.RawMessage{
+				"model": json.RawMessage(fmt.Sprintf(`"%s"`, dev.Model)),
+				"mac":   json.RawMessage(fmt.Sprintf(`"%s"`, dev.Mac)),
+			},
+		}, strings.TrimSpace(dev.Alias))
+	} else {
+		for _, child := range dev.Children {
+			entityID := translate.MakeChildEntityID(dev.DeviceID, child.ID)
+			currentEntityIDs[entityID] = struct{}{}
+			a.setEntityChildID(parentDeviceID, entityID, child.ID)
+			a.saveDiscoveredEntity(domain.Entity{
+				ID:       entityID,
+				Plugin:   PluginID,
+				DeviceID: parentDeviceID,
+				Type:     "kasa_switch",
+				Name:     strings.TrimSpace(child.Alias),
+				Commands: []string{"switch_turn_on", "switch_turn_off", "switch_toggle"},
+				State: domain.Switch{
+					Power: child.RelayState == 1,
+				},
+				Meta: map[string]json.RawMessage{
+					"model": json.RawMessage(fmt.Sprintf(`"%s"`, dev.Model)),
+					"mac":   json.RawMessage(fmt.Sprintf(`"%s"`, dev.Mac)),
+				},
+			}, strings.TrimSpace(child.Alias))
+		}
+	}
+	a.cleanupStaleEntities(parentDeviceID, currentEntityIDs)
+}
+
+func (a *App) saveDiscoveredEntity(entity domain.Entity, name string) {
+	a.mu.Lock()
+	key := entity.Key()
+	_, alreadySeen := a.seen[key]
+	a.seen[key] = struct{}{}
+	a.mu.Unlock()
+
+	if err := a.store.Save(entity); err != nil {
+		log.Printf("plugin-kasa: failed to save entity %s: %v", key, err)
+	} else if !alreadySeen {
+		log.Printf("plugin-kasa: registered %s (%s)", name, key)
+	}
+}
+
+func relayStateFromSysInfo(dev translate.SysInfo) bool {
+	if dev.RelayState != nil {
+		return *dev.RelayState == 1
+	}
+	for _, child := range dev.Children {
+		if child.RelayState == 1 {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *App) recordIPMappings(dev translate.SysInfo, ip string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	parentDeviceID := translate.MakeDeviceID(dev.Mac)
+	a.ipMap[parentDeviceID] = ip
+}
+
+func (a *App) setRelayPower(ip, childID string, state int) error {
+	if childID != "" {
+		return setChildPower(ip, childID, state)
+	}
+	return setPower(ip, state)
+}
+
+func (a *App) setEntityChildID(deviceID, entityID, childID string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.entityChildIDs[deviceID+"."+entityID] = childID
+}
+
+func (a *App) clearEntityChildID(deviceID, entityID string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	delete(a.entityChildIDs, deviceID+"."+entityID)
+}
+
+func (a *App) getEntityChildID(deviceID, entityID string) string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.entityChildIDs[deviceID+"."+entityID]
+}
+
+func (a *App) cleanupStaleEntities(deviceID string, currentEntityIDs map[string]struct{}) {
+	entries, err := a.store.Search(PluginID + "." + deviceID + ".*")
+	if err != nil {
+		log.Printf("plugin-kasa: search stale entities for %s: %v", deviceID, err)
+		return
+	}
+	for _, entry := range entries {
+		parts := strings.Split(entry.Key, ".")
+		if len(parts) != 3 {
+			continue
+		}
+		entityID := parts[2]
+		if _, ok := currentEntityIDs[entityID]; ok {
+			continue
+		}
+		deleteKey := domain.EntityKey{Plugin: PluginID, DeviceID: deviceID, ID: entityID}
+		if err := a.store.Delete(deleteKey); err != nil {
+			log.Printf("plugin-kasa: delete stale entity %s: %v", entry.Key, err)
+			continue
+		}
+		a.clearEntityChildID(deviceID, entityID)
+	}
 }
 
 func (a *App) updateSwitchState(entity domain.Entity, mutate func(*domain.Switch)) {

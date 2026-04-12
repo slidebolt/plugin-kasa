@@ -3,13 +3,17 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	app "github.com/slidebolt/plugin-kasa/app"
 	translate "github.com/slidebolt/plugin-kasa/internal/translate"
+	domain "github.com/slidebolt/sb-domain"
+	testkit "github.com/slidebolt/sb-testkit"
 )
 
 func loadEnvLocal(t *testing.T) {
@@ -61,5 +65,53 @@ func TestDiscovery_FindDevices(t *testing.T) {
 	t.Logf("found %d device(s):", len(devices))
 	for _, d := range devices {
 		t.Logf("  %-25s %-15s %s", d.Alias, d.Model, d.Mac)
+	}
+}
+
+func TestDiscovery_RegistersEP40OutletsAsEntities(t *testing.T) {
+	loadEnvLocal(t)
+
+	subnet := os.Getenv("KASA_SUBNET")
+	if subnet == "" {
+		t.Fatal("KASA_SUBNET not set -- add it to .env.local")
+	}
+
+	env := testkit.NewTestEnv(t)
+	env.Start("messenger")
+	env.Start("storage")
+
+	t.Setenv("KASA_SUBNET", subnet)
+	p := app.New()
+	deps := map[string]json.RawMessage{
+		"messenger": env.MessengerPayload(),
+	}
+	if _, err := p.OnStart(deps); err != nil {
+		t.Fatalf("plugin OnStart: %v", err)
+	}
+	t.Cleanup(func() { _ = p.OnShutdown() })
+
+	entries, err := env.Storage().Search("plugin-kasa.kasa-2887ba950a49.*")
+	if err != nil {
+		t.Fatalf("search kasa EP40 entities: %v", err)
+	}
+
+	if len(entries) != 2 {
+		t.Fatalf("EP40 entities = %d, want 2", len(entries))
+	}
+
+	names := map[string]bool{}
+	for _, entry := range entries {
+		var entity domain.Entity
+		if err := json.Unmarshal(entry.Data, &entity); err != nil {
+			t.Fatalf("unmarshal entity %s: %v", entry.Key, err)
+		}
+		names[entity.Name] = true
+		if entity.DeviceID != "kasa-2887ba950a49" {
+			t.Fatalf("%s deviceID = %q, want kasa-2887ba950a49", entry.Key, entity.DeviceID)
+		}
+	}
+
+	if !names["deck lights"] || !names["deck holiday lights"] {
+		t.Fatalf("unexpected EP40 outlet names: %+v", names)
 	}
 }

@@ -32,6 +32,16 @@ go run .
 {"system":{"set_relay_state":{"state":0}}}  // off
 ```
 
+Multi-outlet devices such as the EP40 expose multiple switch entities under one
+device. Per-outlet control uses the same relay command with a Kasa context:
+
+```json
+{
+  "context": {"child_ids": ["<outlet-id>"]},
+  "system": {"set_relay_state": {"state": 1}}
+}
+```
+
 ### Set Light Brightness
 ```json
 {"smartlife.iot.smartbulb.lightingservice":{"transition_light_state":{"brightness":100,"on_off":1}}}
