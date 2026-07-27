@@ -37,6 +37,11 @@ type Response struct {
 	} `json:"system"`
 }
 
+type commandError struct {
+	Path    string
+	ErrCode int
+}
+
 func XOREncrypt(plaintext string) []byte {
 	key := byte(171)
 	encrypted := make([]byte, len(plaintext))
@@ -148,23 +153,10 @@ func GetDeviceInfo(ip string) (*SysInfo, error) {
 		return nil, err
 	}
 
-	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-	header := make([]byte, 4)
-	if _, err := io.ReadFull(conn, header); err != nil {
+	data, err := readResponse(conn)
+	if err != nil {
 		return nil, err
 	}
-
-	length := binary.BigEndian.Uint32(header)
-	if length > 16384 {
-		return nil, fmt.Errorf("response too large: %d", length)
-	}
-
-	dataBuf := make([]byte, length)
-	if _, err := io.ReadFull(conn, dataBuf); err != nil {
-		return nil, err
-	}
-
-	data := XORDecrypt(dataBuf)
 	var resp Response
 	if err := json.Unmarshal([]byte(data), &resp); err != nil {
 		return nil, err
@@ -193,11 +185,11 @@ func SetChildPower(ip, childID string, state int) error {
 }
 
 func sendCommand(ip string, cmd any) error {
-	data, err := json.Marshal(cmd)
+	payloadJSON, err := json.Marshal(cmd)
 	if err != nil {
 		return err
 	}
-	payload := EncryptWithHeader(string(data))
+	payload := EncryptWithHeader(string(payloadJSON))
 
 	conn, err := net.DialTimeout("tcp", ip+":9999", 2*time.Second)
 	if err != nil {
@@ -206,8 +198,94 @@ func sendCommand(ip string, cmd any) error {
 	defer conn.Close()
 
 	_ = conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
-	_, err = conn.Write(payload)
-	return err
+	if _, err := conn.Write(payload); err != nil {
+		return err
+	}
+
+	data, err := readResponse(conn)
+	if err != nil {
+		return err
+	}
+
+	cmdErr, err := parseCommandError(data)
+	if err != nil {
+		return fmt.Errorf("decode command response: %w: %s", err, data)
+	}
+	if cmdErr.Path != "" {
+		return fmt.Errorf("%s err_code=%d response=%s", cmdErr.Path, cmdErr.ErrCode, data)
+	}
+	return nil
+}
+
+func readResponse(conn net.Conn) (string, error) {
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	header := make([]byte, 4)
+	if _, err := io.ReadFull(conn, header); err != nil {
+		return "", err
+	}
+
+	length := binary.BigEndian.Uint32(header)
+	if length > 16384 {
+		return "", fmt.Errorf("response too large: %d", length)
+	}
+
+	dataBuf := make([]byte, length)
+	if _, err := io.ReadFull(conn, dataBuf); err != nil {
+		return "", err
+	}
+
+	return XORDecrypt(dataBuf), nil
+}
+
+func parseCommandError(data string) (commandError, error) {
+	var payload any
+	if err := json.Unmarshal([]byte(data), &payload); err != nil {
+		return commandError{}, err
+	}
+	if cmdErr, ok := findCommandError(payload, ""); ok {
+		return cmdErr, nil
+	}
+	return commandError{}, nil
+}
+
+func findCommandError(value any, path string) (commandError, bool) {
+	switch typed := value.(type) {
+	case map[string]any:
+		if rawCode, ok := typed["err_code"]; ok {
+			code, ok := rawCode.(float64)
+			if !ok {
+				return commandError{Path: joinPath(path, "err_code")}, true
+			}
+			if int(code) != 0 {
+				return commandError{Path: joinPath(path, "err_code"), ErrCode: int(code)}, true
+			}
+		}
+		for key, child := range typed {
+			childPath := key
+			if path != "" {
+				childPath = path + "." + key
+			}
+			if err, ok := findCommandError(child, childPath); ok {
+				return err, true
+			}
+		}
+	case []any:
+		for index, child := range typed {
+			childPath := fmt.Sprintf("%s[%d]", path, index)
+			if err, ok := findCommandError(child, childPath); ok {
+				return err, true
+			}
+		}
+	}
+
+	return commandError{}, false
+}
+
+func joinPath(path, key string) string {
+	if path == "" {
+		return key
+	}
+	return path + "." + key
 }
 
 func MakeDeviceID(mac string) string {
@@ -233,4 +311,16 @@ func MakeChildEntityID(parentDeviceID, childID string) string {
 		suffix = "unknown"
 	}
 	return "outlet-" + suffix
+}
+
+func NormalizeChildID(parentDeviceID, childID string) string {
+	parentToken := strings.TrimSpace(parentDeviceID)
+	childToken := strings.TrimSpace(childID)
+	if childToken == "" {
+		return ""
+	}
+	if parentToken == "" || strings.HasPrefix(strings.ToLower(childToken), strings.ToLower(parentToken)) {
+		return childToken
+	}
+	return parentToken + childToken
 }

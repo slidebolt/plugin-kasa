@@ -53,3 +53,59 @@ func TestMakeChildEntityID(t *testing.T) {
 		t.Fatalf("MakeChildEntityID() = %q, want %q", got, "outlet-01")
 	}
 }
+
+func TestNormalizeChildID(t *testing.T) {
+	tests := []struct {
+		name     string
+		parentID string
+		childID  string
+		want     string
+	}{
+		{
+			name:     "expands short suffix",
+			parentID: "80067FCB6D318DBCDED89309B7249B791FEFC423",
+			childID:  "01",
+			want:     "80067FCB6D318DBCDED89309B7249B791FEFC42301",
+		},
+		{
+			name:     "passes through full child id",
+			parentID: "80067FCB6D318DBCDED89309B7249B791FEFC423",
+			childID:  "80067FCB6D318DBCDED89309B7249B791FEFC42300",
+			want:     "80067FCB6D318DBCDED89309B7249B791FEFC42300",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := NormalizeChildID(tt.parentID, tt.childID); got != tt.want {
+				t.Fatalf("NormalizeChildID() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseCommandError_Success(t *testing.T) {
+	got, err := parseCommandError(`{"system":{"set_relay_state":{"err_code":0}}}`)
+	if err != nil {
+		t.Fatalf("parseCommandError() error = %v", err)
+	}
+	if got.Path != "" {
+		t.Fatalf("parseCommandError() = %+v, want no error", got)
+	}
+}
+
+func TestParseCommandError_NonZeroErrCode(t *testing.T) {
+	got, err := parseCommandError(`{"system":{"set_relay_state":{"err_code":-1}}}`)
+	if err != nil {
+		t.Fatalf("parseCommandError() error = %v", err)
+	}
+	if got.Path != "system.set_relay_state.err_code" || got.ErrCode != -1 {
+		t.Fatalf("parseCommandError() = %+v", got)
+	}
+}
+
+func TestParseCommandError_InvalidJSON(t *testing.T) {
+	if _, err := parseCommandError(`not-json`); err == nil {
+		t.Fatal("parseCommandError() error = nil, want decode error")
+	}
+}

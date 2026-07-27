@@ -19,6 +19,35 @@ source .env.local
 go run .
 ```
 
+## Local device tests
+
+The plugin includes integration tests for real Kasa hardware. They load
+`KASA_*` variables from `plugin-kasa/.env.local` when present, and you can also
+pass overrides inline.
+
+```bash
+# Non-mutating: discovery + entity registration for a specific strip
+KASA_SUBNET=192.168.88 \
+KASA_TEST_DEVICE_IP=192.168.88.38 \
+go test -tags integration -run 'TestIntegration_TargetStripRegistersNamedOutlets|TestDiscovery_RegistersEP40OutletsAsEntities' ./cmd/plugin-kasa
+```
+
+```bash
+# Mutating: flips one outlet, verifies the state change, then restores it
+KASA_SUBNET=192.168.88 \
+KASA_TEST_DEVICE_IP=192.168.88.38 \
+KASA_TEST_OUTLET_NAME='deck holiday lights' \
+KASA_TEST_ALLOW_MUTATION=1 \
+go test -tags integration -run TestIntegration_TargetStripOutletRoundTrip ./cmd/plugin-kasa
+```
+
+Optional overrides:
+
+- `KASA_TEST_DEVICE_ID` to assert the discovered device ID
+- `KASA_TEST_EXPECTED_NAMES` as a comma-separated outlet name list
+- `KASA_TEST_OUTLET_NAME` to choose which outlet the live round-trip test toggles
+- `KASA_TEST_ALLOW_MUTATION=1` to enable the live toggle test
+
 ## API Commands
 
 ### Get System Info

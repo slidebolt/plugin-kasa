@@ -285,7 +285,7 @@ func (a *App) registerDiscoveredDevice(dev translate.SysInfo) {
 		for _, child := range dev.Children {
 			entityID := translate.MakeChildEntityID(dev.DeviceID, child.ID)
 			currentEntityIDs[entityID] = struct{}{}
-			a.setEntityChildID(parentDeviceID, entityID, child.ID)
+			a.setEntityChildID(parentDeviceID, entityID, translate.NormalizeChildID(dev.DeviceID, child.ID))
 			a.saveDiscoveredEntity(domain.Entity{
 				ID:       entityID,
 				Plugin:   PluginID,
