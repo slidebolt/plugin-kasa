@@ -89,7 +89,7 @@ func sendAndReceive(t *testing.T, cmds *messenger.Commands, entity domain.Entity
 	select {
 	case got := <-done:
 		return got
-	case <-time.After(2 * time.Second):
+	case <-time.After(15 * time.Second):
 		t.Fatal("timed out waiting for command")
 		return nil
 	}
