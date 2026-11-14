@@ -19,7 +19,7 @@ func TestStorageContract_KasaEntityRoundTrips(t *testing.T) {
 		ID:       "kasa-2887ba559988",
 		Plugin:   kasaapp.PluginID,
 		DeviceID: "kasa-2887ba559988",
-		Type:     "kasa_switch",
+		Type:     "switch",
 		Name:     "Kasa Plug",
 		Commands: []string{"switch_turn_on", "switch_turn_off", "switch_toggle"},
 		State:    domain.Switch{Power: true},

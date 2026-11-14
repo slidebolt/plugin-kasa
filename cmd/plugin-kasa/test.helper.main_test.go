@@ -23,9 +23,9 @@ import (
 
 	translate "github.com/slidebolt/plugin-kasa/internal/translate"
 	domain "github.com/slidebolt/sb-domain"
-	testkit "github.com/slidebolt/sb-testkit"
 	messenger "github.com/slidebolt/sb-messenger-sdk"
 	storage "github.com/slidebolt/sb-storage-sdk"
+	testkit "github.com/slidebolt/sb-testkit"
 )
 
 // ==========================================================================
@@ -101,9 +101,9 @@ func sendAndReceive(t *testing.T, cmds *messenger.Commands, entity domain.Entity
 
 func TestSwitch_TurnOn(t *testing.T) {
 	_, store, cmds := env(t)
-	saveEntity(t, store, "plugin-kasa", "kasa-aabbccdd", "kasa-aabbccdd", "kasa_switch", "Test Plug", domain.Switch{Power: false})
+	saveEntity(t, store, "plugin-kasa", "kasa-aabbccdd", "kasa-aabbccdd", "switch", "Test Plug", domain.Switch{Power: false})
 
-	entity := domain.Entity{ID: "kasa-aabbccdd", Plugin: "plugin-kasa", DeviceID: "kasa-aabbccdd", Type: "kasa_switch"}
+	entity := domain.Entity{ID: "kasa-aabbccdd", Plugin: "plugin-kasa", DeviceID: "kasa-aabbccdd", Type: "switch"}
 	got := sendAndReceive(t, cmds, entity, domain.SwitchTurnOn{}, "plugin-kasa.>")
 	cmd, ok := got.(domain.SwitchTurnOn)
 	if !ok {
@@ -114,9 +114,9 @@ func TestSwitch_TurnOn(t *testing.T) {
 
 func TestSwitch_TurnOff(t *testing.T) {
 	_, store, cmds := env(t)
-	saveEntity(t, store, "plugin-kasa", "kasa-aabbccdd", "kasa-aabbccdd", "kasa_switch", "Test Plug", domain.Switch{Power: true})
+	saveEntity(t, store, "plugin-kasa", "kasa-aabbccdd", "kasa-aabbccdd", "switch", "Test Plug", domain.Switch{Power: true})
 
-	entity := domain.Entity{ID: "kasa-aabbccdd", Plugin: "plugin-kasa", DeviceID: "kasa-aabbccdd", Type: "kasa_switch"}
+	entity := domain.Entity{ID: "kasa-aabbccdd", Plugin: "plugin-kasa", DeviceID: "kasa-aabbccdd", Type: "switch"}
 	got := sendAndReceive(t, cmds, entity, domain.SwitchTurnOff{}, "plugin-kasa.>")
 	cmd, ok := got.(domain.SwitchTurnOff)
 	if !ok {
@@ -127,9 +127,9 @@ func TestSwitch_TurnOff(t *testing.T) {
 
 func TestSwitch_Toggle(t *testing.T) {
 	_, store, cmds := env(t)
-	saveEntity(t, store, "plugin-kasa", "kasa-aabbccdd", "kasa-aabbccdd", "kasa_switch", "Test Plug", domain.Switch{Power: true})
+	saveEntity(t, store, "plugin-kasa", "kasa-aabbccdd", "kasa-aabbccdd", "switch", "Test Plug", domain.Switch{Power: true})
 
-	entity := domain.Entity{ID: "kasa-aabbccdd", Plugin: "plugin-kasa", DeviceID: "kasa-aabbccdd", Type: "kasa_switch"}
+	entity := domain.Entity{ID: "kasa-aabbccdd", Plugin: "plugin-kasa", DeviceID: "kasa-aabbccdd", Type: "switch"}
 	got := sendAndReceive(t, cmds, entity, domain.SwitchToggle{}, "plugin-kasa.>")
 	cmd, ok := got.(domain.SwitchToggle)
 	if !ok {
@@ -144,7 +144,7 @@ func TestSwitch_Toggle(t *testing.T) {
 
 func TestCustom_KasaSwitch_SaveGetHydrate(t *testing.T) {
 	_, store, _ := env(t)
-	saveEntity(t, store, "plugin-kasa", "kasa-aabbccdd", "kasa-aabbccdd", "kasa_switch", "Living Room Plug",
+	saveEntity(t, store, "plugin-kasa", "kasa-aabbccdd", "kasa-aabbccdd", "switch", "Living Room Plug",
 		domain.Switch{Power: true})
 
 	got := getEntity(t, store, "plugin-kasa", "kasa-aabbccdd", "kasa-aabbccdd")
@@ -159,13 +159,13 @@ func TestCustom_KasaSwitch_SaveGetHydrate(t *testing.T) {
 
 func TestCustom_KasaSwitch_QueryByType(t *testing.T) {
 	_, store, _ := env(t)
-	saveEntity(t, store, "plugin-kasa", "kasa-001", "kasa-001", "kasa_switch", "Plug 1", domain.Switch{Power: true})
-	saveEntity(t, store, "plugin-kasa", "kasa-002", "kasa-002", "kasa_switch", "Plug 2", domain.Switch{Power: false})
+	saveEntity(t, store, "plugin-kasa", "kasa-001", "kasa-001", "switch", "Plug 1", domain.Switch{Power: true})
+	saveEntity(t, store, "plugin-kasa", "kasa-002", "kasa-002", "switch", "Plug 2", domain.Switch{Power: false})
 	saveEntity(t, store, "test", "dev1", "switch01", "switch", "Regular Switch", domain.Switch{Power: true})
 
-	entries := queryByType(t, store, "kasa_switch")
-	if len(entries) != 2 {
-		t.Fatalf("kasa_switches: got %d, want 2", len(entries))
+	entries := queryByType(t, store, "switch")
+	if len(entries) != 3 {
+		t.Fatalf("switches: got %d, want 3", len(entries))
 	}
 }
 

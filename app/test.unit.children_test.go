@@ -75,7 +75,7 @@ func TestHandleCommand_ChildOutletTargetsChildRelay(t *testing.T) {
 		ID:       "outlet-01",
 		Plugin:   PluginID,
 		DeviceID: "kasa-2887ba950a49",
-		Type:     "kasa_switch",
+		Type:     "switch",
 		Name:     "deck holiday lights",
 		Commands: []string{"switch_turn_on", "switch_turn_off", "switch_toggle"},
 		State:    domain.Switch{Power: false},

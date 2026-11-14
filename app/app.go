@@ -28,10 +28,6 @@ import (
 
 const PluginID = "plugin-kasa"
 
-func init() {
-	domain.Register("kasa_switch", domain.Switch{})
-}
-
 var (
 	discoverDevices = translate.DiscoverDevices
 	getDeviceInfo   = translate.GetDeviceInfo
@@ -257,7 +253,7 @@ func (a *App) lookupIPFromStorage(deviceID string) string {
 func (a *App) registerDiscoveredDevice(dev translate.SysInfo) {
 	parentDeviceID := translate.MakeDeviceID(dev.Mac)
 	currentEntityIDs := make(map[string]struct{})
-	deviceType := "kasa_switch"
+	deviceType := "switch"
 	if strings.Contains(strings.ToLower(dev.Model), "bulb") ||
 		strings.Contains(strings.ToLower(dev.Model), "kl") {
 		deviceType = "light"
@@ -290,7 +286,7 @@ func (a *App) registerDiscoveredDevice(dev translate.SysInfo) {
 				ID:       entityID,
 				Plugin:   PluginID,
 				DeviceID: parentDeviceID,
-				Type:     "kasa_switch",
+				Type:     "switch",
 				Name:     strings.TrimSpace(child.Alias),
 				Commands: []string{"switch_turn_on", "switch_turn_off", "switch_toggle"},
 				State: domain.Switch{
