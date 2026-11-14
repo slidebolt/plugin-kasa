@@ -58,6 +58,7 @@ func (a *App) Hello() contract.HelloResponse {
 		ID:              PluginID,
 		Kind:            contract.KindPlugin,
 		ContractVersion: contract.ContractVersion,
+		Definitions:     contract.DescribePlugin("Kasa", "Discovers Kasa appliances and exposes shared switch or light contracts.", "light", "switch"),
 		DependsOn:       []string{"messenger", "storage"},
 	}
 }
