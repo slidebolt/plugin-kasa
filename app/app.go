@@ -60,6 +60,10 @@ func (a *App) Hello() contract.HelloResponse {
 		ContractVersion: contract.ContractVersion,
 		Definitions:     contract.DescribePlugin("Kasa", "Discovers Kasa appliances and exposes shared switch or light contracts.", "light", "switch"),
 		DependsOn:       []string{"messenger", "storage"},
+		Setup: contract.SelectableSetup("Devices",
+			contract.SetupField{Key: "subnet", Environment: "KASA_SUBNET", Name: "Discovery subnet", Description: "Optional IPv4 subnet or broadcast address used for Kasa discovery.", Control: contract.SetupText},
+			contract.SetupField{Key: "timeout_ms", Environment: "KASA_TIMEOUT_MS", Name: "Discovery timeout", Description: "UDP discovery timeout in milliseconds.", Control: contract.SetupText, Format: "integer", Advanced: true, Default: json.RawMessage(`"400"`)},
+		),
 	}
 }
 
